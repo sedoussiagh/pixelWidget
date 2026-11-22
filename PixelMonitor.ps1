@@ -1,0 +1,327 @@
+﻿param([switch]$SmokeTest,[switch]$SensorRestart)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+[Windows.Forms.Application]::EnableVisualStyles()
+
+$collect = {
+    param($drive)
+    $cpu = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -OperationTimeoutSec 3 -ErrorAction SilentlyContinue
+    $os = Get-CimInstance Win32_OperatingSystem -OperationTimeoutSec 3 -ErrorAction SilentlyContinue
+    $disk = Get-CimInstance Win32_PerfFormattedData_PerfDisk_LogicalDisk -Filter "Name='$drive'" -OperationTimeoutSec 3 -ErrorAction SilentlyContinue
+    $volume = [IO.DriveInfo]::new($drive)
+    $battery = [Windows.Forms.SystemInformation]::PowerStatus
+    $temperature = $null
+    if (!$global:pixelHardware) {
+        $library = Join-Path $env:LOCALAPPDATA 'PixelMonitor\LibreHardwareMonitor\LibreHardwareMonitorLib.dll'
+        if (Test-Path -LiteralPath $library) {
+            try {
+                [Reflection.Assembly]::LoadFrom($library) | Out-Null
+                $computer = New-Object LibreHardwareMonitor.Hardware.Computer
+                $computer.IsCpuEnabled = $true
+                $computer.Open()
+                $global:pixelHardware = $computer
+            } catch { }
+        }
+    }
+    if ($global:pixelHardware) {
+        foreach ($hardware in $global:pixelHardware.Hardware) {
+            $hardware.Update()
+            $temperature = $hardware.Sensors | Where-Object {
+                $_.SensorType -eq 'Temperature' -and $_.Name -eq 'CPU Package' -and $_.Value -gt 0 -and $_.Value -lt 120
+            } | Select-Object -First 1
+            if ($temperature) { break }
+        }
+    }
+    $sensors = if (!$temperature -and (Get-Process LibreHardwareMonitor -ErrorAction SilentlyContinue)) {
+        Get-CimInstance -Namespace root/LibreHardwareMonitor -Class Sensor -Filter "SensorType='Temperature'" -OperationTimeoutSec 3 -ErrorAction SilentlyContinue
+    }
+    if (!$temperature) { $temperature = $sensors | Where-Object { $_.Name -eq 'CPU Package' -and $_.Value -gt 0 -and $_.Value -lt 120 } | Select-Object -First 1 }
+    [pscustomobject]@{
+        CPU = $cpu.PercentProcessorTime
+        RAM = $(if ($os.TotalVisibleMemorySize) { [math]::Round(100 * (1 - $os.FreePhysicalMemory / $os.TotalVisibleMemorySize)) })
+        RamUsed = $(if ($os.TotalVisibleMemorySize) { ($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB })
+        RamTotal = $(if ($os.TotalVisibleMemorySize) { $os.TotalVisibleMemorySize / 1MB })
+        Disk = $disk.PercentDiskTime
+        DiskRead = $disk.DiskReadBytesPersec
+        DiskWrite = $disk.DiskWriteBytesPersec
+        Free = $(if ($volume.IsReady) { $volume.AvailableFreeSpace / 1GB })
+        Capacity = $(if ($volume.IsReady) { $volume.TotalSize / 1GB })
+        Temp = $temperature.Value
+        Battery = $(if ($battery.BatteryLifePercent -ge 0 -and $battery.BatteryChargeStatus -ne 'Unknown' -and -not ($battery.BatteryChargeStatus -band 128)) { [math]::Round(100 * $battery.BatteryLifePercent) })
+        Power = $(if ($battery.PowerLineStatus -eq 'Online') { 'SECTEUR' } else { 'BATTERIE' })
+    }
+}
+
+$script:folder = $PSScriptRoot
+$script:settingsPath = Join-Path (Join-Path $env:LOCALAPPDATA 'PixelMonitor') 'settings.json'
+$settings = [ordered]@{ Theme='Menthe'; Interval=3000; Scale=100; Topmost=$false; Drive=$env:SystemDrive; X=$null; Y=$null; Visible=@('CPU','RAM','DISQUE','TEMP','BATTERIE') }
+if (Test-Path -LiteralPath $script:settingsPath) {
+    try {
+        $loaded = Get-Content -Raw -LiteralPath $script:settingsPath | ConvertFrom-Json
+        foreach ($key in @($settings.Keys)) {
+            if ($loaded.PSObject.Properties[$key]) { $settings[$key] = $loaded.$key }
+        }
+    } catch { }
+}
+$themes = [ordered]@{ Menthe='#8CF5B0'; Ambre='#FFC46B'; Lavande='#D5A8FF'; Glacier='#80DCFF' }
+if (!$themes.Contains($settings.Theme)) { $settings.Theme = 'Menthe' }
+$sample = $null
+$form = [Windows.Forms.Form]::new()
+$form.Text = 'Pixel Monitor'
+$windowIcon = Join-Path $folder 'PixelMonitor.ico'
+if (Test-Path -LiteralPath $windowIcon) { $form.Icon = [Drawing.Icon]::new($windowIcon) }
+$form.FormBorderStyle = 'None'
+$form.StartPosition = 'Manual'
+$form.ShowInTaskbar = $false
+$form.TopMost = [bool]$settings.Topmost
+$form.BackColor = [Drawing.ColorTranslator]::FromHtml('#111721')
+$form.KeyPreview = $true
+[Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'Instance,NonPublic').SetValue($form, $true)
+
+function Save-Settings {
+    $settings.X = $form.Left
+    $settings.Y = $form.Top
+    try {
+        $directory = [IO.Path]::GetDirectoryName($script:settingsPath)
+        [void][IO.Directory]::CreateDirectory($directory)
+        $json = $settings | ConvertTo-Json
+        [IO.File]::WriteAllText($script:settingsPath, $json, [Text.UTF8Encoding]::new($false))
+        return $true
+    } catch {
+        Write-Warning "Pixel Monitor : impossible de sauvegarder les reglages. $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Resize-Widget {
+    $factor = $settings.Scale / 100
+    $form.ClientSize = [Drawing.Size]::new([int](352 * $factor), [int]((81 + 56 * @($settings.Visible).Count) * $factor))
+    if ($form.Visible) {
+        $work = [Windows.Forms.Screen]::FromControl($form).WorkingArea
+        $form.Left = [math]::Max($work.Left,[math]::Min($form.Left,$work.Right-$form.Width))
+        $form.Top = [math]::Max($work.Top,[math]::Min($form.Top,$work.Bottom-$form.Height))
+    }
+    $form.Invalidate()
+}
+
+$form.Add_Paint({
+    param($sender, $e)
+    $g = $e.Graphics
+    $factor = [single]($settings.Scale / 100)
+    $g.ScaleTransform($factor,$factor)
+    $g.TextRenderingHint = 'SingleBitPerPixelGridFit'
+    $accent = [Drawing.SolidBrush]::new([Drawing.ColorTranslator]::FromHtml($themes[$settings.Theme]))
+    $muted = [Drawing.SolidBrush]::new([Drawing.ColorTranslator]::FromHtml('#9CAEC5'))
+    $track = [Drawing.SolidBrush]::new([Drawing.ColorTranslator]::FromHtml('#2A384A'))
+    $bright = [Drawing.Brushes]::White
+    $title = [Drawing.Font]::new('Consolas',17,[Drawing.FontStyle]::Bold,[Drawing.GraphicsUnit]::Pixel)
+    $small = [Drawing.Font]::new('Consolas',12,[Drawing.GraphicsUnit]::Pixel)
+    $frame = [Drawing.Pen]::new($track,2)
+    try {
+        $g.DrawRectangle($frame,1,1,350,($form.ClientSize.Height / $factor)-2)
+        $g.FillRectangle($accent,16,15,8,8)
+        $g.FillRectangle($accent,24,23,8,8)
+        $g.DrawString('PIXEL MONITOR',$title,$bright,40,14)
+        $g.DrawString('[ MENU ]',$small,$accent,276,18)
+        $y = 48
+        foreach ($label in $settings.Visible) {
+            $meter = $null
+            $primary = '--'
+            $detail = 'Chargement...'
+            if ($sample) {
+                $detail = 'Mesure indisponible'
+                switch ($label) {
+                    CPU { $meter=$sample.CPU; if ($null -ne $meter) { $detail='Charge totale' } }
+                    RAM { $meter=$sample.RAM; if ($null -ne $meter) { $detail='{0:N1} / {1:N1} Gio' -f $sample.RamUsed,$sample.RamTotal } }
+                    DISQUE { $meter=$sample.Disk; if ($null -ne $meter) { $detail='{0}  L {1:N1} / E {2:N1} Mio/s' -f $settings.Drive,($sample.DiskRead/1MB),($sample.DiskWrite/1MB) } }
+                    TEMP { if ($null -ne $sample.Temp) { $meter=$sample.Temp; $primary='{0:N0} °C' -f $meter; $detail='CPU Package' } else { $detail='Capteur CPU : voir le menu' } }
+                    BATTERIE { $meter=$sample.Battery; if ($null -ne $meter) { $detail=$sample.Power } }
+                }
+                if ($label -eq 'DISQUE' -and $null -ne $sample.Free) {
+                    $detail += ('  |  {0:N0} Gio libres' -f $sample.Free)
+                }
+                if ($null -ne $meter -and $label -ne 'TEMP') { $primary='{0:N0} %' -f [math]::Min(100,$meter) }
+            }
+            $g.DrawString($label,$small,$bright,16,$y)
+            $g.DrawString($primary,$small,$accent,334-$g.MeasureString($primary,$small).Width,$y)
+            for ($index=0; $index -lt 20; $index++) {
+                $fill = if ($null -ne $meter -and $index -lt [math]::Round($meter/5)) { $accent } else { $track }
+                $g.FillRectangle($fill,16+16*$index,$y+18,13,7)
+            }
+            $g.DrawString($detail,$small,$muted,16,$y+29)
+            $y += 56
+        }
+        $footer = if ($sample) { '{0:g} s  /  {1:HH:mm:ss}' -f ($settings.Interval/1000),$script:lastSample } else { 'Connexion aux compteurs Windows...' }
+        $g.DrawString($footer,$small,$muted,16,$y+5)
+    } finally {
+        foreach ($resource in @($frame,$title,$small,$accent,$muted,$track)) { $resource.Dispose() }
+    }
+})
+
+$timer = [Windows.Forms.Timer]::new()
+$worker = [PowerShell]::Create()
+$null = $worker.AddScript('Add-Type -AssemblyName System.Windows.Forms').Invoke()
+$worker.Commands.Clear()
+$script:pending = $null
+$script:nextSample = [datetime]::MinValue
+$timer.Interval = 250
+$timer.Add_Tick({
+    if ($script:pending -and $script:pending.IsCompleted) {
+        try {
+            $result = $worker.EndInvoke($script:pending)
+            if ($result.Count -gt 0 -and $script:sampleDrive -eq $settings.Drive) {
+                $script:sample = $result[-1]
+                $script:lastSample = Get-Date
+                $form.Invalidate()
+            }
+        } finally {
+            $worker.Commands.Clear()
+            $worker.Streams.ClearStreams()
+            $script:pending = $null
+        }
+    }
+    if (!$script:pending -and [datetime]::UtcNow -ge $script:nextSample) {
+        $script:sampleDrive = $settings.Drive
+        $null = $worker.AddScript($collect.ToString()).AddArgument($script:sampleDrive)
+        $script:pending = $worker.BeginInvoke()
+        $script:nextSample = [datetime]::UtcNow.AddMilliseconds($settings.Interval)
+    }
+})
+
+$menu = [Windows.Forms.ContextMenuStrip]::new()
+foreach ($group in @(
+    @{ Label='Couleur'; Key='Theme'; Values=@($themes.Keys) },
+    @{ Label='Intervalle'; Key='Interval'; Values=@(1000,3000,5000,10000) },
+    @{ Label='Taille'; Key='Scale'; Values=@(85,100,125,150) },
+    @{ Label='Lecteur'; Key='Drive'; Values=@([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' } | ForEach-Object { $_.Name.TrimEnd('\') }) }
+)) {
+    $parent = $menu.Items.Add($group.Label)
+    foreach ($value in $group.Values) {
+        $label = switch ($group.Key) { Interval { "$($value/1000) s" }; Scale { "$value %" }; default { "$value" } }
+        $option = $parent.DropDownItems.Add($label)
+        $option.Tag = @($group.Key,$value)
+        $option.Add_Click({
+            param($sender,$e)
+            $key,$value = $sender.Tag
+            $settings[$key] = $value
+            if ($key -eq 'Drive') { $script:sample = $null }
+            $script:nextSample = [datetime]::MinValue
+            Resize-Widget
+            Save-Settings
+        })
+    }
+    $parent.Add_DropDownOpening({
+        param($sender,$e)
+        foreach ($option in $sender.DropDownItems) { $option.Checked = $settings[$option.Tag[0]] -eq $option.Tag[1] }
+    })
+}
+$metrics = $menu.Items.Add('Mesures visibles')
+$allMetrics = @('CPU','RAM','DISQUE','TEMP','BATTERIE')
+foreach ($metric in $allMetrics) {
+    $option = $metrics.DropDownItems.Add($metric)
+    $option.Add_Click({
+        param($sender,$e)
+        if ($sender.Text -in $settings.Visible) {
+            if (@($settings.Visible).Count -gt 1) { $settings.Visible = @($settings.Visible | Where-Object { $_ -ne $sender.Text }) }
+        } else { $settings.Visible = @($allMetrics | Where-Object { $_ -eq $sender.Text -or $_ -in $settings.Visible }) }
+        Resize-Widget
+        Save-Settings
+    })
+}
+$metrics.Add_DropDownOpening({ foreach ($option in $metrics.DropDownItems) { $option.Checked = $option.Text -in $settings.Visible } })
+$pin = $menu.Items.Add('Toujours au premier plan')
+$pin.Checked = $form.TopMost
+$pin.Add_Click({ $form.TopMost = !$form.TopMost; $pin.Checked = $form.TopMost; $settings.Topmost = $form.TopMost; Save-Settings })
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$isAdmin = [Security.Principal.WindowsPrincipal]::new($identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (!$isAdmin) {
+    $null = $menu.Items.Add('Relancer avec accès température', $null, {
+        try {
+            $exe = Join-Path $PSHOME 'powershell.exe'
+            $scriptPath = Join-Path $folder 'PixelMonitor.ps1'
+            $arguments = '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $scriptPath + '" -SensorRestart'
+            Start-Process -FilePath $exe -ArgumentList $arguments -Verb RunAs -ErrorAction Stop
+            $form.Close()
+        } catch {
+            [void][Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Pixel Monitor')
+        }
+    })
+}
+$null = $menu.Items.Add('Fermer', $null, { $form.Close() })
+$form.ContextMenuStrip = $menu
+$form.Add_MouseDown({
+    param($sender,$e)
+    if ($e.Button -eq 'Left') {
+        if ($e.Y -lt 40*$settings.Scale/100 -and $e.X -gt 268*$settings.Scale/100) { $menu.Show($form,$e.Location) }
+        else { $script:anchor = $e.Location }
+    }
+})
+$form.Add_MouseMove({
+    param($sender,$e)
+    if ($script:anchor -and $e.Button -eq 'Left') {
+        $form.Left += $e.X - $script:anchor.X
+        $form.Top += $e.Y - $script:anchor.Y
+    }
+})
+$form.Add_MouseUp({ if ($script:anchor) { $script:anchor = $null; Save-Settings } })
+$form.Add_FormClosed({
+    $timer.Stop()
+    $script:settingsSaved = Save-Settings
+    try {
+        if ($script:pending) { $worker.Stop() }
+    } finally {
+        $worker.Dispose()
+        $timer.Dispose()
+        $menu.Dispose()
+    }
+})
+Resize-Widget
+$area = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+$form.Location = [Drawing.Point]::new(($area.Right-$form.Width-18),($area.Bottom-$form.Height-18))
+if ($null -ne $settings.X -and $null -ne $settings.Y) {
+    $candidate = [Drawing.Point]::new([int]$settings.X,[int]$settings.Y)
+    $work = [Windows.Forms.Screen]::FromPoint($candidate).WorkingArea
+    if ($work.Contains($candidate)) {
+        $form.Left = [math]::Max($work.Left,[math]::Min($candidate.X,$work.Right-$form.Width))
+        $form.Top = [math]::Max($work.Top,[math]::Min($candidate.Y,$work.Bottom-$form.Height))
+    }
+}
+
+$form.Add_Shown({
+    $form.BeginInvoke([Action]{
+        $form.Hide()
+        $form.Show()
+    }) | Out-Null
+})
+
+if ($SmokeTest) {
+    $form.Show()
+    $timer.Start()
+    $deadline = [datetime]::UtcNow.AddSeconds(18)
+    while ((!$sample) -and [datetime]::UtcNow -lt $deadline) {
+        [Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 40
+    }
+    if (!$sample -or $null -eq $sample.CPU -or $null -eq $sample.RAM -or $null -eq $sample.Disk) { throw 'Compteurs indisponibles' }
+    $bitmap = [Drawing.Bitmap]::new($form.Width,$form.Height)
+    $form.DrawToBitmap($bitmap,$form.ClientRectangle)
+    $bitmap.Save((Join-Path $folder 'preview.png'))
+    $bitmap.Dispose()
+    $sample | ConvertTo-Json
+    $form.Close()
+    if (!$script:settingsSaved) { throw 'Sauvegarde des reglages non verifiee' }
+    exit
+}
+if ($SensorRestart) {
+    for ($attempt=0; $attempt -lt 30; $attempt++) {
+        try { $existing = [Threading.Mutex]::OpenExisting('Local\PixelMonitorWidget'); $existing.Dispose() }
+        catch [Threading.WaitHandleCannotBeOpenedException] { break }
+        Start-Sleep -Milliseconds 250
+    }
+}
+$created = $false
+$mutex = [Threading.Mutex]::new($true,'Local\PixelMonitorWidget',[ref]$created)
+if (!$created) { $mutex.Dispose(); exit }
+$timer.Start()
+[Windows.Forms.Application]::Run($form)
+$mutex.Dispose()
