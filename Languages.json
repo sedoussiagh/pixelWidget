@@ -39,7 +39,18 @@
     "Désactivées": "Off",
     "Prudent": "Cautious",
     "Standard": "Standard",
-    "Intensif": "Intensive"
+    "Intensif": "Intensive",
+    "GPU": "GPU",
+    "GpuMemory": "VRAM {0} MiB | Shared {1} MiB",
+    "GpuSelect": "GPU adapter",
+    "GpuAuto": "Automatic (busiest)",
+    "Session": "AI session",
+    "StartSession": "Start CSV recording",
+    "StopSession": "Stop and show peaks",
+    "About": "About",
+    "SessionFormat": "Elapsed: {0} | Samples: {1}",
+    "VRAM": "Dedicated memory",
+    "Sources": "Sources: Windows performance counters, ACPI thermal zone."
   },
   "fr": {
     "Language": "Langue",
@@ -81,7 +92,18 @@
     "Désactivées": "Désactivées",
     "Prudent": "Prudent",
     "Standard": "Standard",
-    "Intensif": "Intensif"
+    "Intensif": "Intensif",
+    "GPU": "GPU",
+    "GpuMemory": "VRAM {0} Mio | Partagée {1} Mio",
+    "GpuSelect": "Carte graphique",
+    "GpuAuto": "Automatique (la plus active)",
+    "Session": "Session IA",
+    "StartSession": "Démarrer la session CSV",
+    "StopSession": "Arrêter et afficher les pics",
+    "About": "À propos",
+    "SessionFormat": "Durée : {0} | Relevés : {1}",
+    "VRAM": "Mémoire dédiée",
+    "Sources": "Sources : compteurs Windows et zone thermique ACPI."
   },
   "ar": {
     "Language": "اللغة",
@@ -123,6 +145,17 @@
     "Désactivées": "متوقّفة",
     "Prudent": "حذر",
     "Standard": "قياسي",
-    "Intensif": "مكثّف"
+    "Intensif": "مكثّف",
+    "GPU": "الرسوميات",
+    "GpuMemory": "مخصصة {0} | مشتركة {1} ميبي بايت",
+    "GpuSelect": "بطاقة الرسوميات",
+    "GpuAuto": "تلقائي (الأكثر نشاطًا)",
+    "Session": "جلسة الذكاء الاصطناعي",
+    "StartSession": "بدء تسجيل CSV",
+    "StopSession": "إيقاف وعرض القيم القصوى",
+    "About": "حول التطبيق",
+    "SessionFormat": "المدة: {0} | القراءات: {1}",
+    "VRAM": "الذاكرة المخصصة",
+    "Sources": "المصادر: عدادات ويندوز والمنطقة الحرارية ACPI."
   }
 }

@@ -4,7 +4,7 @@ Add-Type -AssemblyName System.Windows.Forms,System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 
 $collect = {
-    param($drive)
+    param($drive,$gpuId)
     $cpu = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -OperationTimeoutSec 3 -ErrorAction SilentlyContinue
     $os = Get-CimInstance Win32_OperatingSystem -OperationTimeoutSec 3 -ErrorAction SilentlyContinue
     $disk = Get-CimInstance Win32_PerfFormattedData_PerfDisk_LogicalDisk -Filter "Name='$drive'" -OperationTimeoutSec 3 -ErrorAction SilentlyContinue
@@ -21,7 +21,33 @@ $collect = {
             } | Sort-Object Celsius -Descending | Select-Object -First 1
     }
 
+    $memory = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory -OperationTimeoutSec 3 -ErrorAction SilentlyContinue)
+    $engines = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -OperationTimeoutSec 3 -ErrorAction SilentlyContinue
+    $loads = @{}
+    foreach ($engine in ($engines | Group-Object { $_.Name -replace '^pid_\d+_','' })) {
+        if ($engine.Name -notmatch '^(luid_.+?_phys_\d+)_eng_') { continue }
+        $id = $Matches[1]
+        $load = [math]::Min(100,($engine.Group | Measure-Object UtilizationPercentage -Sum).Sum)
+        $loads[$id] = [math]::Max([double]$loads[$id],$load)
+    }
+    $adapters = @(
+        @($memory | ForEach-Object Name) + @($loads.Keys) |
+            Where-Object { $_ -match '^luid_.+_phys_\d+$' } |
+            Sort-Object -Unique |
+            ForEach-Object {
+                $id = $_
+                $usage = $memory | Where-Object Name -eq $id | Select-Object -First 1
+                [pscustomobject]@{ Id=$id; Load=$loads[$id]; Dedicated=$usage.DedicatedUsage; Shared=$usage.SharedUsage }
+            }
+    )
+    $active = $adapters | Where-Object Id -eq $gpuId | Select-Object -First 1
+    if (!$active) {
+        $active = $adapters | Sort-Object -Property @{Expression={$_.Load};Descending=$true},@{Expression={$_.Shared};Descending=$true} | Select-Object -First 1
+    }
+
     [pscustomobject]@{
+        Gpu = $active
+        GpuAdapters = $adapters
         CPU = $cpu.PercentProcessorTime
         RAM = $(if ($os.TotalVisibleMemorySize) { [math]::Round(100 * (1 - $os.FreePhysicalMemory / $os.TotalVisibleMemorySize)) })
         RamUsed = $(if ($os.TotalVisibleMemorySize) { ($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB })
@@ -40,7 +66,7 @@ $collect = {
 
 $script:folder = $PSScriptRoot
 $script:settingsPath = Join-Path (Join-Path $env:LOCALAPPDATA 'PixelMonitor') 'settings.json'
-$settings = [ordered]@{ Theme='Menthe'; Interval=3000; Scale=100; Mini=$false; Language='en'; History=$false; Animation=$false; Alerts='Standard'; Topmost=$false; Drive=$env:SystemDrive; X=$null; Y=$null; Visible=@('CPU','RAM','DISQUE','TEMP','BATTERIE') }
+$settings = [ordered]@{ Theme='Menthe'; Interval=3000; Scale=100; Mini=$false; Language='en'; History=$false; Animation=$false; Alerts='Standard'; GpuId='Auto'; Topmost=$false; Drive=$env:SystemDrive; X=$null; Y=$null; Visible=@('CPU','RAM','GPU','DISQUE','TEMP','BATTERIE') }
 if (Test-Path -LiteralPath $script:settingsPath) {
     try {
         $loaded = Get-Content -Raw -LiteralPath $script:settingsPath | ConvertFrom-Json
@@ -81,6 +107,7 @@ function Draw-WidgetText($graphics, [string]$text, $font, $brush, [single]$left,
     }
 }
 
+if ($loaded -and !$loaded.PSObject.Properties['GpuId'] -and 'GPU' -notin $settings.Visible) { $settings.Visible = @($settings.Visible) + 'GPU' }
 $themes = [ordered]@{ Menthe='#8CF5B0'; Ambre='#FFC46B'; Lavande='#D5A8FF'; Glacier='#80DCFF'; Rose='#FF91BC'; Arcade='#D9FB66' }
 if (!$themes.Contains($settings.Theme)) { $settings.Theme = 'Menthe' }
 if ($SmokeTest -and $SmokeLanguage) { $settings.Language = $SmokeLanguage }
@@ -94,6 +121,7 @@ $thresholds = @{
 
 function Get-MetricValue($reading, $label) {
     if ($reading) {
+        if ($label -eq 'GPU') { return $reading.Gpu.Load }
         $key = switch ($label) {
             DISQUE { 'Disk' }
             BATTERIE { 'Battery' }
@@ -103,8 +131,69 @@ function Get-MetricValue($reading, $label) {
     }
 }
 
+$script:recording = $null
+
+function Start-AiSession {
+    $dialog = [Windows.Forms.SaveFileDialog]::new()
+    try {
+        $dialog.Filter = 'CSV (*.csv)|*.csv'
+        $dialog.FileName = 'PixelMonitor-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.csv'
+        if ($dialog.ShowDialog() -ne 'OK') { return }
+        $writer = [IO.StreamWriter]::new($dialog.FileName,$false,[Text.UTF8Encoding]::new($true))
+        $writer.AutoFlush = $true
+        $writer.WriteLine('timestamp_utc,cpu_pct,ram_pct,ram_used_mib,drive,disk_active_pct,disk_read_bps,disk_write_bps,gpu_adapter,gpu_pct,gpu_dedicated_mib,gpu_shared_mib,acpi_temp_c,acpi_zone,battery_pct')
+        $script:recording = @{ Writer=$writer; Start=[datetime]::UtcNow; Samples=0; Peak=@{} }
+        $form.Invalidate()
+    } finally { $dialog.Dispose() }
+}
+
+function Add-SessionSample($reading) {
+    $state = $script:recording
+    if (!$state) { return }
+    $gpu = $reading.Gpu
+    $vram = if ($null -ne $gpu.Dedicated) { [math]::Round($gpu.Dedicated / 1MB,2) }
+    $shared = if ($null -ne $gpu.Shared) { [math]::Round($gpu.Shared / 1MB,2) }
+    $ram = if ($null -ne $reading.RamUsed) { [math]::Round($reading.RamUsed * 1024,2) }
+    $temp = if ($null -ne $reading.Temp) { [math]::Round($reading.Temp,2) }
+    $row = @([datetime]::UtcNow.ToString('o'),$reading.CPU,$reading.RAM,$ram,$settings.Drive,$reading.Disk,$reading.DiskRead,$reading.DiskWrite,$gpu.Id,$gpu.Load,$vram,$shared,$temp,$reading.TempZone,$reading.Battery)
+    $fields = foreach ($value in $row) {
+        '"' + ([Convert]::ToString($value,[Globalization.CultureInfo]::InvariantCulture) -replace '"','""') + '"'
+    }
+    $state.Writer.WriteLine($fields -join ',')
+    $state.Samples++
+    $values = @{ CPU=$reading.CPU; RAM=$reading.RAM; GPU=$gpu.Load; VRAM=$vram; TEMP=$temp }
+    foreach ($key in $values.Keys) {
+        $value = $values[$key]
+        if ($null -ne $value -and (!$state.Peak.ContainsKey($key) -or $value -gt $state.Peak[$key])) { $state.Peak[$key] = $value }
+    }
+}
+
+function Stop-AiSession([bool]$showSummary) {
+    $state = $script:recording
+    if (!$state) { return }
+    $script:recording = $null
+    $state.Writer.Dispose()
+    $form.Invalidate()
+    if ($showSummary) {
+        $elapsed = [datetime]::UtcNow - $state.Start
+        $lines = @((T 'SessionFormat') -f [TimeSpan]::FromSeconds([math]::Floor($elapsed.TotalSeconds)).ToString('c'),$state.Samples)
+        foreach ($key in @('CPU','RAM','GPU','VRAM','TEMP')) {
+            if ($state.Peak.ContainsKey($key)) {
+                $unit = switch ($key) { VRAM { 'MiB' }; TEMP { '°C' }; default { '%' } }
+                $lines += ('{0}: {1:N0} {2}' -f (T $key),$state.Peak[$key],$unit)
+            }
+        }
+        [void][Windows.Forms.MessageBox]::Show(($lines -join [Environment]::NewLine),(T 'Session'))
+    }
+}
+
+function Invoke-SessionAction([scriptblock]$action) {
+    try { & $action }
+    catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,(T 'Session')) }
+}
+
 function Add-MetricHistory($reading) {
-    foreach ($label in @('CPU','RAM','DISQUE','TEMP','BATTERIE')) {
+    foreach ($label in @('CPU','RAM','GPU','DISQUE','TEMP','BATTERIE')) {
         if (!$script:history.ContainsKey($label)) {
             $script:history[$label] = [Collections.Generic.Queue[object]]::new()
         }
@@ -194,7 +283,7 @@ $form.Add_Paint({
             $g.DrawRectangle($frame,1,1,218,($form.ClientSize.Height / $factor)-2)
             $g.FillRectangle($accent,(Get-LayoutX 12 5),10,5,5)
             $g.FillRectangle($secondPixel,(Get-LayoutX 17 5),15,5,5)
-            Draw-WidgetText $g 'PIXEL MONITOR' $small $bright 29 10
+            Draw-WidgetText $g ($(if ($script:recording) { 'PIXEL · REC' } else { 'PIXEL MONITOR' })) $small $bright 29 10
             Draw-WidgetText $g '[+]' $small $accent 181 10
             $y = 33
             foreach ($label in $settings.Visible) {
@@ -232,6 +321,12 @@ $form.Add_Paint({
             if ($sample) {
                 $detail = T 'Unavailable'
                 switch ($label) {
+                    GPU {
+                        $meter=$sample.Gpu.Load
+                        $dedicated = if ($null -ne $sample.Gpu.Dedicated) { '{0:N0}' -f ($sample.Gpu.Dedicated / 1MB) } else { '--' }
+                        $shared = if ($null -ne $sample.Gpu.Shared) { '{0:N0}' -f ($sample.Gpu.Shared / 1MB) } else { '--' }
+                        $detail = (T 'GpuMemory') -f $dedicated,$shared
+                    }
                     CPU { $meter=$sample.CPU; if ($null -ne $meter) { $detail=T 'CpuDetail' } }
                     RAM { $meter=$sample.RAM; if ($null -ne $meter) { $detail=(T 'RamDetail') -f $sample.RamUsed,$sample.RamTotal } }
                     DISQUE { $meter=$sample.Disk; if ($null -ne $meter) { $detail=(T 'DiskDetail') -f $settings.Drive,($sample.DiskRead/1MB),($sample.DiskWrite/1MB) } }
@@ -261,6 +356,7 @@ $form.Add_Paint({
             $y += 56
         }
         $footer = if ($sample) { '{0:g} s  /  {1:HH:mm:ss}' -f ($settings.Interval/1000),$script:lastSample } else { T 'Connecting' }
+        if ($script:recording) { $footer = 'REC  ' + $footer }
         Draw-WidgetText $g $footer $small $muted 16 ($y+5)
     } finally {
         foreach ($resource in @($frame,$title,$small,$accent,$muted,$track,$alert)) { $resource.Dispose() }
@@ -286,10 +382,11 @@ $timer.Add_Tick({
     if ($script:pending -and $script:pending.IsCompleted) {
         try {
             $result = $worker.EndInvoke($script:pending)
-            if ($result.Count -gt 0 -and $script:sampleDrive -eq $settings.Drive) {
+            if ($result.Count -gt 0 -and $script:sampleDrive -eq $settings.Drive -and $script:sampleGpu -eq $settings.GpuId) {
                 $script:sample = $result[-1]
                 $script:lastSample = Get-Date
                 Add-MetricHistory $script:sample
+                if ($script:recording) { Invoke-SessionAction { try { Add-SessionSample $script:sample } catch { Stop-AiSession $false; throw } } }
                 $form.Invalidate()
             }
         } finally {
@@ -300,7 +397,8 @@ $timer.Add_Tick({
     }
     if (!$script:pending -and [datetime]::UtcNow -ge $script:nextSample) {
         $script:sampleDrive = $settings.Drive
-        $null = $worker.AddScript($collect.ToString()).AddArgument($script:sampleDrive)
+        $script:sampleGpu = $settings.GpuId
+        $null = $worker.AddScript($collect.ToString()).AddArgument($script:sampleDrive).AddArgument($script:sampleGpu)
         $script:pending = $worker.BeginInvoke()
         $script:nextSample = [datetime]::UtcNow.AddMilliseconds($settings.Interval)
     }
@@ -385,7 +483,7 @@ foreach ($toggle in @(@{Label='Historique (60 relevés)';Key='History'},@{Label=
 }
 $metrics = $menu.Items.Add('Mesures visibles')
 Register-MenuLabel $metrics 'Metrics'
-$allMetrics = @('CPU','RAM','DISQUE','TEMP','BATTERIE')
+$allMetrics = @('CPU','RAM','GPU','DISQUE','TEMP','BATTERIE')
 foreach ($metric in $allMetrics) {
     $option = $metrics.DropDownItems.Add($metric)
     $option.Tag = $metric
@@ -404,6 +502,52 @@ $pin = $menu.Items.Add('Toujours au premier plan')
 Register-MenuLabel $pin 'Topmost'
 $pin.Checked = $form.TopMost
 $pin.Add_Click({ $form.TopMost = !$form.TopMost; $pin.Checked = $form.TopMost; $settings.Topmost = $form.TopMost; Save-Settings })
+$gpuMenu = $menu.Items.Add('GPU')
+Register-MenuLabel $gpuMenu 'GpuSelect'
+$gpuMenu.Add_DropDownOpening({
+    while ($gpuMenu.DropDownItems.Count -gt 0) { $gpuMenu.DropDownItems[0].Dispose() }
+    $choices = @([pscustomobject]@{Id='Auto';Label=(T 'GpuAuto')})
+    $ordinal = 0
+    foreach ($adapter in $sample.GpuAdapters) {
+        $ordinal++
+        $choices += [pscustomobject]@{Id=$adapter.Id;Label=('GPU {0} | {1}' -f $ordinal,$adapter.Id)}
+    }
+    foreach ($choice in $choices) {
+        $item = $gpuMenu.DropDownItems.Add($choice.Label)
+        $item.Tag = $choice.Id
+        $item.Checked = $settings.GpuId -eq $choice.Id
+        $item.Add_Click({
+            param($sender,$e)
+            $settings.GpuId = [string]$sender.Tag
+            $script:history.Remove('GPU')
+            $script:nextSample = [datetime]::MinValue
+            [void](Save-Settings)
+        })
+    }
+})
+
+$sessionMenu = $menu.Items.Add('AI session')
+Register-MenuLabel $sessionMenu 'Session'
+$startItem = $sessionMenu.DropDownItems.Add('Start')
+Register-MenuLabel $startItem 'StartSession'
+$startItem.Add_Click({ Invoke-SessionAction { Start-AiSession } })
+$stopItem = $sessionMenu.DropDownItems.Add('Stop')
+Register-MenuLabel $stopItem 'StopSession'
+$stopItem.Add_Click({ Invoke-SessionAction { Stop-AiSession $true } })
+$sessionMenu.Add_DropDownOpening({
+    $startItem.Enabled = !$script:recording
+    $stopItem.Enabled = [bool]$script:recording
+})
+
+$aboutItem = $menu.Items.Add('About')
+Register-MenuLabel $aboutItem 'About'
+$aboutItem.Add_Click({
+    $lines = @('Pixel Monitor 0.1.0',(T 'Sources'))
+    if ($sample.Gpu) { $lines += 'GPU: ' + $sample.Gpu.Id }
+    if ($sample.TempZone) { $lines += 'ACPI: ' + $sample.TempZone }
+    [void][Windows.Forms.MessageBox]::Show(($lines -join [Environment]::NewLine),(T 'About'))
+})
+
 $close = $menu.Items.Add('Fermer', $null, { $form.Close() })
 Register-MenuLabel $close 'Close'
 Update-WidgetLanguage
@@ -430,6 +574,7 @@ $form.Add_MouseMove({
 $form.Add_MouseUp({ if ($script:anchor) { $script:anchor = $null; Save-Settings } })
 $form.Add_FormClosed({
     $timer.Stop()
+    if ($script:recording) { Invoke-SessionAction { Stop-AiSession $false } }
     $script:settingsSaved = Save-Settings
     try {
         if ($script:pending) { $worker.Stop() }

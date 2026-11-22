@@ -1,39 +1,31 @@
 # Pixel Monitor
 
-Widget de bureau Windows 11 au style pixel. Il affiche la charge CPU, la mémoire, les débits et l’espace libre du disque sélectionné, la batterie et, si le capteur est accessible, la température de la zone ACPI. Le menu permet de modifier la couleur, la taille, l’intervalle et les mesures visibles.
+Pixel-style desktop widget for monitoring local AI workloads on Windows 11. It shows CPU, RAM, GPU, dedicated and shared GPU memory, disk, battery and ACPI temperature.
 
-## Suivre un traitement IA
+[Download the portable Windows ZIP](https://github.com/sedoussiagh/pixelWidget/releases/latest)
 
-- **Historique** : les 60 derniers relevés de chaque mesure restent en mémoire pendant la session. À 3 s par relevé, le graphique couvre environ 3 min. Les barres instantanées sont affichées par défaut. Active **Menu → Historique (60 relevés)** pour voir le graphique.
-- **Alertes visuelles** : un **!** et une couleur orange signalent un seuil atteint. Le menu propose trois profils ou la désactivation. Les alertes de température se rapportent à la zone ACPI.
-- **Affichage** : thèmes Menthe, Ambre, Lavande, Glacier, Rose et Arcade, animation du logo facultative, et option **Toujours au premier plan**.
+![Full view](docs/full.png) ![Compact view](docs/compact.png)
 
-| Profil | CPU | RAM | Zone ACPI |
-| --- | ---: | ---: | ---: |
-| Prudent | 85 % | 80 % | 75 °C |
-| Standard | 95 % | 90 % | 85 °C |
-| Intensif | 99 % | 95 % | 90 °C |
+## Quick start
 
-Le widget interroge les compteurs Windows localement. Il ne relève pas la charge GPU ni la VRAM. Pour limiter la fréquence d’échantillonnage pendant un calcul, choisis un intervalle de 3, 5 ou 10 secondes.
-
-## Langue
-
-Choisis **Menu → Language** pour passer à **English**, **Français** ou **العربية**. La langue est mémorisée. Sur une nouvelle installation, le widget démarre en anglais. En arabe, les menus, les mesures et les graphiques sont disposés de droite à gauche.
-
-## Mode miniature
-
-Choisis **Menu → Mode miniature** ou clique sur **[-]** dans le titre. La miniature affiche les mesures sélectionnées sur des lignes compactes. Clique sur **[+]** pour retrouver la vue complète. Un clic droit ouvre le menu dans les deux vues. Le mode choisi est mémorisé.
-
-## Installation
-
-Clone le dépôt sur le PC Windows, puis ouvre PowerShell dans le dossier du projet.
+Extract the whole ZIP and run **PixelMonitor.exe**. The portable build needs no administrator rights or third-party driver. To compile from source and create desktop and Start menu shortcuts, run:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1
 ```
 
-Le script compile le lanceur avec le compilateur .NET Framework de Windows, puis crée les raccourcis sur le Bureau et dans le menu Démarrer. Ouvre **Pixel Monitor** depuis l’un de ces raccourcis. Les réglages sont conservés sous `%LOCALAPPDATA%\PixelMonitor`.
+## Monitor an AI workload
 
-## Température
+- **GPU adapter** selects a Windows adapter identifier. Automatic mode follows the busiest adapter. Load is the busiest engine on that adapter. Dedicated and shared GPU memory are shown separately.
+- **AI session → Start CSV recording** saves readings directly to a local CSV. **Stop and show peaks** displays duration, sample count and observed peaks.
+- **History (60 samples)** switches from instantaneous bars to recent readings. **Alerts** offers CPU, RAM and ACPI temperature thresholds.
+- **[-]** and **[+]** switch between full and compact views. Both have a right-click menu. English is the default, with French and right-to-left Arabic available under **Language**.
+- **About** shows the adapter and thermal-zone identifiers when available.
 
-Le widget utilise les zones thermiques ACPI exposées par les compteurs Windows. Si plusieurs zones sont disponibles, il affiche la plus chaude. Cette mesure peut différer de la température interne du CPU Package. Si le matériel ne publie aucune zone, le widget affiche « Zone thermique indisponible ». Aucun composant tiers ni droit administrateur ne sont requis.
+## Compatibility
+
+Tested on a ThinkPad T480s with Windows 11 Pro 23H2 x64 and Intel integrated graphics. ARM64, other Windows versions and discrete GPUs have not been validated. Windows in S mode cannot run the portable build.
+
+GPU counters depend on Windows and the graphics driver. Missing readings appear as `--`. ACPI temperature reports the hottest zone Windows exposes. Its reading may differ from CPU Package temperature. Preferences stay under `%LOCALAPPDATA%\PixelMonitor`, and session CSVs go to the location you choose.
+
+[MIT license](LICENSE)
