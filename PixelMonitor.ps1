@@ -1,4 +1,4 @@
-﻿param([switch]$SmokeTest)
+﻿param([switch]$SmokeTest,[switch]$SmokeTestMini)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
@@ -40,7 +40,7 @@ $collect = {
 
 $script:folder = $PSScriptRoot
 $script:settingsPath = Join-Path (Join-Path $env:LOCALAPPDATA 'PixelMonitor') 'settings.json'
-$settings = [ordered]@{ Theme='Menthe'; Interval=3000; Scale=100; Topmost=$false; Drive=$env:SystemDrive; X=$null; Y=$null; Visible=@('CPU','RAM','DISQUE','TEMP','BATTERIE') }
+$settings = [ordered]@{ Theme='Menthe'; Interval=3000; Scale=100; Mini=$false; Topmost=$false; Drive=$env:SystemDrive; X=$null; Y=$null; Visible=@('CPU','RAM','DISQUE','TEMP','BATTERIE') }
 if (Test-Path -LiteralPath $script:settingsPath) {
     try {
         $loaded = Get-Content -Raw -LiteralPath $script:settingsPath | ConvertFrom-Json
@@ -65,6 +65,7 @@ $form.KeyPreview = $true
 [Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'Instance,NonPublic').SetValue($form, $true)
 
 function Save-Settings {
+    if ($SmokeTest) { return $true }
     $settings.X = $form.Left
     $settings.Y = $form.Top
     try {
@@ -81,7 +82,9 @@ function Save-Settings {
 
 function Resize-Widget {
     $factor = $settings.Scale / 100
-    $form.ClientSize = [Drawing.Size]::new([int](352 * $factor), [int]((81 + 56 * @($settings.Visible).Count) * $factor))
+    $count = @($settings.Visible).Count
+    $width, $height = if ($settings.Mini) { 220; 42 + 22 * $count } else { 352; 81 + 56 * $count }
+    $form.ClientSize = [Drawing.Size]::new([int]($width * $factor), [int]($height * $factor))
     if ($form.Visible) {
         $work = [Windows.Forms.Screen]::FromControl($form).WorkingArea
         $form.Left = [math]::Max($work.Left,[math]::Min($form.Left,$work.Right-$form.Width))
@@ -104,10 +107,40 @@ $form.Add_Paint({
     $small = [Drawing.Font]::new('Consolas',12,[Drawing.GraphicsUnit]::Pixel)
     $frame = [Drawing.Pen]::new($track,2)
     try {
+        if ($settings.Mini) {
+            $g.DrawRectangle($frame,1,1,218,($form.ClientSize.Height / $factor)-2)
+            $g.FillRectangle($accent,12,10,5,5)
+            $g.FillRectangle($accent,17,15,5,5)
+            $g.DrawString('PIXEL MONITOR',$small,$bright,29,10)
+            $g.DrawString('[+]',$small,$accent,181,10)
+            $y = 33
+            foreach ($label in $settings.Visible) {
+                $meter = if ($sample) {
+                    switch ($label) {
+                        CPU { $sample.CPU }
+                        RAM { $sample.RAM }
+                        DISQUE { $sample.Disk }
+                        TEMP { $sample.Temp }
+                        BATTERIE { $sample.Battery }
+                    }
+                }
+                $primary = if ($null -eq $meter) { '--' } elseif ($label -eq 'TEMP') { '{0:N0} °C' -f $meter } else { '{0:N0} %' -f [math]::Min(100,$meter) }
+                $name = if ($label -eq 'TEMP') { 'ACPI' } else { $label }
+                $g.DrawString($name,$small,$bright,12,$y)
+                for ($index=0; $index -lt 8; $index++) {
+                    $fill = if ($null -ne $meter -and $index -lt [math]::Round($meter*8/100)) { $accent } else { $track }
+                    $g.FillRectangle($fill,76+10*$index,$y+4,8,6)
+                }
+                $g.DrawString($primary,$small,$accent,208-$g.MeasureString($primary,$small).Width,$y)
+                $y += 22
+            }
+            return
+        }
         $g.DrawRectangle($frame,1,1,350,($form.ClientSize.Height / $factor)-2)
         $g.FillRectangle($accent,16,15,8,8)
         $g.FillRectangle($accent,24,23,8,8)
         $g.DrawString('PIXEL MONITOR',$title,$bright,40,14)
+        $g.DrawString('[-]',$small,$accent,246,18)
         $g.DrawString('[ MENU ]',$small,$accent,276,18)
         $y = 48
         foreach ($label in $settings.Visible) {
@@ -201,6 +234,15 @@ foreach ($group in @(
         foreach ($option in $sender.DropDownItems) { $option.Checked = $settings[$option.Tag[0]] -eq $option.Tag[1] }
     })
 }
+$miniItem = $menu.Items.Add('Mode miniature')
+$miniItem.Checked = [bool]$settings.Mini
+function Switch-WidgetLayout {
+    $settings.Mini = !$settings.Mini
+    $miniItem.Checked = $settings.Mini
+    Resize-Widget
+    [void](Save-Settings)
+}
+$miniItem.Add_Click({ Switch-WidgetLayout })
 $metrics = $menu.Items.Add('Mesures visibles')
 $allMetrics = @('CPU','RAM','DISQUE','TEMP','BATTERIE')
 foreach ($metric in $allMetrics) {
@@ -223,7 +265,11 @@ $form.ContextMenuStrip = $menu
 $form.Add_MouseDown({
     param($sender,$e)
     if ($e.Button -eq 'Left') {
-        if ($e.Y -lt 40*$settings.Scale/100 -and $e.X -gt 268*$settings.Scale/100) { $menu.Show($form,$e.Location) }
+        $x = $e.X * 100 / $settings.Scale
+        $y = $e.Y * 100 / $settings.Scale
+        if ($settings.Mini -and $y -lt 30 -and $x -ge 174) { Switch-WidgetLayout }
+        elseif (!$settings.Mini -and $y -lt 40 -and $x -ge 270) { $menu.Show($form,$e.Location) }
+        elseif (!$settings.Mini -and $y -lt 40 -and $x -ge 241) { Switch-WidgetLayout }
         else { $script:anchor = $e.Location }
     }
 })
@@ -266,6 +312,10 @@ $form.Add_Shown({
 })
 
 if ($SmokeTest) {
+    $settings.Mini = [bool]$SmokeTestMini
+    Resize-Widget
+    $expectedWidth = if ($settings.Mini) { 220 } else { 352 }
+    if ($form.ClientSize.Width -ne [int]($expectedWidth * $settings.Scale / 100)) { throw 'Largeur du widget incorrecte' }
     $form.Show()
     $timer.Start()
     $deadline = [datetime]::UtcNow.AddSeconds(18)
