@@ -2,6 +2,7 @@
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
+Add-Type -Path (Join-Path $PSScriptRoot 'PixelMenuRenderer.cs') -ReferencedAssemblies 'System.Windows.Forms.dll','System.Drawing.dll'
 
 $collect = {
     param($drive,$gpuId)
@@ -405,12 +406,33 @@ $timer.Add_Tick({
 })
 
 $menu = [Windows.Forms.ContextMenuStrip]::new()
+$menuRenderer = [PixelMonitor.MenuRenderer]::new()
+$menuFonts = @{
+    Latin = [Drawing.Font]::new('Consolas',11,[Drawing.GraphicsUnit]::Point)
+    Arabic = [Drawing.Font]::new('Segoe UI',11,[Drawing.GraphicsUnit]::Point)
+}
+function Set-MenuAppearance($strip) {
+    $strip.Renderer = $menuRenderer
+    $strip.BackColor = [PixelMonitor.MenuRenderer]::Panel
+    $strip.Padding = [Windows.Forms.Padding]::new(4,5,4,5)
+    $strip.ShowImageMargin = $false
+    $strip.ShowCheckMargin = $true
+    $strip.RightToLeft = $menu.RightToLeft
+    $strip.Font = $menu.Font
+    foreach ($item in $strip.Items) {
+        if ($item -is [Windows.Forms.ToolStripMenuItem] -and $item.HasDropDownItems) { Set-MenuAppearance $item.DropDown }
+    }
+}
 $localizedMenuItems = [Collections.Generic.List[object]]::new()
 function Register-MenuLabel($item, $key) {
     $localizedMenuItems.Add([pscustomobject]@{Item=$item; Key=$key})
 }
 function Update-WidgetLanguage {
     $menu.RightToLeft = if ($settings.Language -eq 'ar') { 'Yes' } else { 'No' }
+    $fontKey = if ($settings.Language -eq 'ar') { 'Arabic' } else { 'Latin' }
+    $menu.Font = $menuFonts[$fontKey]
+    $menuRenderer.Accent = [Drawing.ColorTranslator]::FromHtml($themes[$settings.Theme])
+    Set-MenuAppearance $menu
     foreach ($entry in $localizedMenuItems) { $entry.Item.Text = T $entry.Key }
     foreach ($choice in $languageMenu.DropDownItems) { $choice.Checked = $choice.Tag -eq $settings.Language }
     $form.Invalidate()
@@ -446,6 +468,7 @@ foreach ($group in @(
             param($sender,$e)
             $key,$value = $sender.Tag
             $settings[$key] = $value
+            if ($key -eq 'Theme') { Update-WidgetLanguage }
             if ($key -eq 'Drive') { $script:sample = $null; $script:history.Remove('DISQUE') }
             $script:nextSample = [datetime]::MinValue
             Resize-Widget
@@ -457,6 +480,7 @@ foreach ($group in @(
         foreach ($option in $sender.DropDownItems) { $option.Checked = $settings[$option.Tag[0]] -eq $option.Tag[1] }
     })
 }
+$null = $menu.Items.Add([Windows.Forms.ToolStripSeparator]::new())
 $miniItem = $menu.Items.Add('Mode miniature')
 Register-MenuLabel $miniItem 'Mini'
 $miniItem.Checked = [bool]$settings.Mini
@@ -504,7 +528,9 @@ $pin.Checked = $form.TopMost
 $pin.Add_Click({ $form.TopMost = !$form.TopMost; $pin.Checked = $form.TopMost; $settings.Topmost = $form.TopMost; Save-Settings })
 $gpuMenu = $menu.Items.Add('GPU')
 Register-MenuLabel $gpuMenu 'GpuSelect'
+$null = $gpuMenu.DropDownItems.Add((T 'GpuAuto'))
 $gpuMenu.Add_DropDownOpening({
+    Set-MenuAppearance $gpuMenu.DropDown
     while ($gpuMenu.DropDownItems.Count -gt 0) { $gpuMenu.DropDownItems[0].Dispose() }
     $choices = @([pscustomobject]@{Id='Auto';Label=(T 'GpuAuto')})
     $ordinal = 0
@@ -539,10 +565,11 @@ $sessionMenu.Add_DropDownOpening({
     $stopItem.Enabled = [bool]$script:recording
 })
 
+$null = $menu.Items.Add([Windows.Forms.ToolStripSeparator]::new())
 $aboutItem = $menu.Items.Add('About')
 Register-MenuLabel $aboutItem 'About'
 $aboutItem.Add_Click({
-    $lines = @('Pixel Monitor 0.1.0',(T 'Sources'))
+    $lines = @('Pixel Monitor 0.1.1',(T 'Sources'))
     if ($sample.Gpu) { $lines += 'GPU: ' + $sample.Gpu.Id }
     if ($sample.TempZone) { $lines += 'ACPI: ' + $sample.TempZone }
     [void][Windows.Forms.MessageBox]::Show(($lines -join [Environment]::NewLine),(T 'About'))
@@ -582,6 +609,7 @@ $form.Add_FormClosed({
         $worker.Dispose()
         $timer.Dispose()
         $menu.Dispose()
+        foreach ($font in $menuFonts.Values) { $font.Dispose() }
     }
 })
 Resize-Widget
@@ -628,6 +656,16 @@ if ($SmokeTest) {
     $suffix = if ($settings.Mini) { '-mini' } else { '' }
     $bitmap.Save((Join-Path (Split-Path -Parent $script:settingsPath) ('preview-' + $settings.Language + $suffix + '.png')))
     $bitmap.Dispose()
+    $menu.Show($form,[Drawing.Point]::new(0,0))
+    try {
+        [Windows.Forms.Application]::DoEvents()
+        if ($menu.Renderer -ne $menuRenderer -or $languageMenu.DropDown.Renderer -ne $menuRenderer) { throw 'Menu theme was not applied' }
+        $preview = [Drawing.Bitmap]::new($menu.Width,$menu.Height)
+        try {
+            $menu.DrawToBitmap($preview,$menu.ClientRectangle)
+            $preview.Save((Join-Path (Split-Path -Parent $script:settingsPath) ('menu-' + $settings.Language + '.png')))
+        } finally { $preview.Dispose() }
+    } finally { $menu.Close() }
     $sample | ConvertTo-Json
     $form.Close()
     if (!$script:settingsSaved) { throw 'Sauvegarde des reglages non verifiee' }
