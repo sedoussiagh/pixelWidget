@@ -1,4 +1,4 @@
-﻿param([switch]$SmokeTest,[switch]$SensorRestart)
+﻿param([switch]$SmokeTest)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
@@ -10,47 +10,15 @@ $collect = {
     $disk = Get-CimInstance Win32_PerfFormattedData_PerfDisk_LogicalDisk -Filter "Name='$drive'" -OperationTimeoutSec 3 -ErrorAction SilentlyContinue
     $volume = [IO.DriveInfo]::new($drive)
     $battery = [Windows.Forms.SystemInformation]::PowerStatus
-    $temperature = $null
-    $sensorStatus = 'Capteur CPU indisponible'
-    $library = Join-Path $env:LOCALAPPDATA 'PixelMonitor\LibreHardwareMonitor\LibreHardwareMonitorLib.dll'
-    if (!(Test-Path -LiteralPath $library)) {
-        $sensorStatus = 'Libre Hardware Monitor requis'
-    } else {
-        if (!$global:pixelHardware -and (!$global:pixelSensorRetry -or [datetime]::UtcNow -ge $global:pixelSensorRetry)) {
-            $global:pixelSensorRetry = [datetime]::UtcNow.AddSeconds(15)
-            try {
-                [void][Reflection.Assembly]::LoadFrom($library)
-                $computer = New-Object LibreHardwareMonitor.Hardware.Computer
-                $computer.IsCpuEnabled = $true
-                $computer.Open()
-                $global:pixelHardware = $computer
-            } catch {
-                $sensorStatus = 'Erreur de lecture du capteur'
-                $global:pixelSensorError = $_.Exception.GetBaseException().Message
-            }
-        }
-        if ($global:pixelHardware) {
-            try {
-                foreach ($hardware in $global:pixelHardware.Hardware) {
-                    $hardware.Update()
-                    $temperature = $hardware.Sensors | Where-Object {
-                        $_.SensorType -eq 'Temperature' -and $_.Name -eq 'CPU Package' -and
-                        $null -ne $_.Value -and $_.Value -gt 0 -and $_.Value -lt 120
-                    } | Select-Object -First 1
-                    if ($temperature) { break }
+    if (!$script:thermalRefresh -or [datetime]::UtcNow -ge $script:thermalRefresh) {
+        $script:thermalRefresh = [datetime]::UtcNow.AddSeconds(5)
+        $script:thermalReading = Get-CimInstance Win32_PerfFormattedData_Counters_ThermalZoneInformation -OperationTimeoutSec 3 -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $kelvin = if ($_.HighPrecisionTemperature -gt 0) { $_.HighPrecisionTemperature / 10 } else { $_.Temperature }
+                if ($kelvin -ge 233 -and $kelvin -le 423) {
+                    [pscustomobject]@{ Celsius = $kelvin - 273.15; Zone = ($_.Name -split '\.')[-1] }
                 }
-            } catch {
-                $global:pixelSensorError = $_.Exception.GetBaseException().Message
-            }
-            if (!$temperature -and [datetime]::UtcNow -ge $global:pixelSensorRetry) {
-                try { $global:pixelHardware.Close() } catch { }
-                $global:pixelHardware = $null
-            }
-        }
-    }
-    if (!$temperature -and (Get-Process LibreHardwareMonitor -ErrorAction SilentlyContinue)) {
-        $sensors = Get-CimInstance -Namespace root/LibreHardwareMonitor -Class Sensor -Filter "SensorType='Temperature'" -OperationTimeoutSec 3 -ErrorAction SilentlyContinue
-        $temperature = $sensors | Where-Object { $_.Name -eq 'CPU Package' -and $_.Value -gt 0 -and $_.Value -lt 120 } | Select-Object -First 1
+            } | Sort-Object Celsius -Descending | Select-Object -First 1
     }
 
     [pscustomobject]@{
@@ -63,9 +31,8 @@ $collect = {
         DiskWrite = $disk.DiskWriteBytesPersec
         Free = $(if ($volume.IsReady) { $volume.AvailableFreeSpace / 1GB })
         Capacity = $(if ($volume.IsReady) { $volume.TotalSize / 1GB })
-        Temp = $temperature.Value
-        TempStatus = $sensorStatus
-        TempError = $global:pixelSensorError
+        Temp = $script:thermalReading.Celsius
+        TempZone = $script:thermalReading.Zone
         Battery = $(if ($battery.BatteryLifePercent -ge 0 -and $battery.BatteryChargeStatus -ne 'Unknown' -and -not ($battery.BatteryChargeStatus -band 128)) { [math]::Round(100 * $battery.BatteryLifePercent) })
         Power = $(if ($battery.PowerLineStatus -eq 'Online') { 'SECTEUR' } else { 'BATTERIE' })
     }
@@ -153,7 +120,7 @@ $form.Add_Paint({
                     CPU { $meter=$sample.CPU; if ($null -ne $meter) { $detail='Charge totale' } }
                     RAM { $meter=$sample.RAM; if ($null -ne $meter) { $detail='{0:N1} / {1:N1} Gio' -f $sample.RamUsed,$sample.RamTotal } }
                     DISQUE { $meter=$sample.Disk; if ($null -ne $meter) { $detail='{0}  L {1:N1} / E {2:N1} Mio/s' -f $settings.Drive,($sample.DiskRead/1MB),($sample.DiskWrite/1MB) } }
-                    TEMP { if ($null -ne $sample.Temp) { $meter=$sample.Temp; $primary='{0:N0} °C' -f $meter; $detail='CPU Package' } else { $detail = if (!$isAdmin -and $sample.TempStatus -ne 'Libre Hardware Monitor requis') { 'Menu > Accès température' } else { $sample.TempStatus } } }
+                    TEMP { if ($null -ne $sample.Temp) { $meter=$sample.Temp; $primary='{0:N0} °C' -f $meter; $detail='Zone ACPI ' + $sample.TempZone } else { $detail='Zone thermique indisponible' } }
                     BATTERIE { $meter=$sample.Battery; if ($null -ne $meter) { $detail=$sample.Power } }
                 }
                 if ($label -eq 'DISQUE' -and $null -ne $sample.Free) {
@@ -251,21 +218,6 @@ $metrics.Add_DropDownOpening({ foreach ($option in $metrics.DropDownItems) { $op
 $pin = $menu.Items.Add('Toujours au premier plan')
 $pin.Checked = $form.TopMost
 $pin.Add_Click({ $form.TopMost = !$form.TopMost; $pin.Checked = $form.TopMost; $settings.Topmost = $form.TopMost; Save-Settings })
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$isAdmin = [Security.Principal.WindowsPrincipal]::new($identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (!$isAdmin) {
-    $null = $menu.Items.Add('Accès température (administrateur)', $null, {
-        try {
-            $exe = Join-Path $PSHOME 'powershell.exe'
-            $scriptPath = Join-Path $folder 'PixelMonitor.ps1'
-            $arguments = '-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $scriptPath + '" -SensorRestart'
-            Start-Process -FilePath $exe -ArgumentList $arguments -Verb RunAs -ErrorAction Stop
-            $form.Close()
-        } catch {
-            [void][Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Pixel Monitor')
-        }
-    })
-}
 $null = $menu.Items.Add('Fermer', $null, { $form.Close() })
 $form.ContextMenuStrip = $menu
 $form.Add_MouseDown({
@@ -317,7 +269,7 @@ if ($SmokeTest) {
     $form.Show()
     $timer.Start()
     $deadline = [datetime]::UtcNow.AddSeconds(18)
-    while ((!$sample) -and [datetime]::UtcNow -lt $deadline) {
+    while ((!$sample -or $null -eq $sample.CPU -or $null -eq $sample.RAM -or $null -eq $sample.Disk) -and [datetime]::UtcNow -lt $deadline) {
         [Windows.Forms.Application]::DoEvents()
         Start-Sleep -Milliseconds 40
     }
@@ -330,13 +282,6 @@ if ($SmokeTest) {
     $form.Close()
     if (!$script:settingsSaved) { throw 'Sauvegarde des reglages non verifiee' }
     exit
-}
-if ($SensorRestart) {
-    for ($attempt=0; $attempt -lt 30; $attempt++) {
-        try { $existing = [Threading.Mutex]::OpenExisting('Local\PixelMonitorWidget'); $existing.Dispose() }
-        catch [Threading.WaitHandleCannotBeOpenedException] { break }
-        Start-Sleep -Milliseconds 250
-    }
 }
 $created = $false
 $mutex = [Threading.Mutex]::new($true,'Local\PixelMonitorWidget',[ref]$created)

@@ -1,6 +1,6 @@
 # Pixel Monitor
 
-Widget de bureau Windows 11 au style pixel. Il affiche la charge CPU, la mémoire, les débits et l’espace libre du disque sélectionné, la batterie et, si le capteur est accessible, la température CPU. Le menu permet de modifier la couleur, la taille, l’intervalle et les mesures visibles.
+Widget de bureau Windows 11 au style pixel. Il affiche la charge CPU, la mémoire, les débits et l’espace libre du disque sélectionné, la batterie et, si le capteur est accessible, la température de la zone ACPI. Le menu permet de modifier la couleur, la taille, l’intervalle et les mesures visibles.
 
 ## Installation
 
@@ -12,12 +12,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1
 
 Le script compile le lanceur avec le compilateur .NET Framework de Windows, puis crée les raccourcis sur le Bureau et dans le menu Démarrer. Ouvre **Pixel Monitor** depuis l’un de ces raccourcis. Les réglages sont conservés sous `%LOCALAPPDATA%\PixelMonitor`.
 
-## Température CPU
+## Température
 
-Sur un nouveau PC, lance l’installeur avec le paramètre `-WithTemperature` pour télécharger la bibliothèque de la version officielle de Libre Hardware Monitor et vérifier son empreinte.
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1 -WithTemperature
-```
-
-Installe ensuite [PawnIO](https://github.com/namazso/PawnIO.Setup/releases/latest) si nécessaire. Dans le widget, sélectionne **Menu → Accès température (administrateur)** et valide la demande administrateur. La disponibilité de la mesure dépend du matériel et des droits Windows.
+Le widget utilise les zones thermiques ACPI exposées par les compteurs Windows. Si plusieurs zones sont disponibles, il affiche la plus chaude. Cette mesure peut différer de la température interne du CPU Package. Si le matériel ne publie aucune zone, le widget affiche « Zone thermique indisponible ». Aucun composant tiers ni droit administrateur ne sont requis.
