@@ -20,4 +20,4 @@ Sur un nouveau PC, lance l’installeur avec le paramètre `-WithTemperature` po
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install.ps1 -WithTemperature
 ```
 
-Installe ensuite [PawnIO](https://github.com/namazso/PawnIO.Setup/releases/latest) si nécessaire. Dans le widget, sélectionne **Menu → Relancer avec accès température** et valide la demande administrateur. La disponibilité de la mesure dépend du matériel et des droits Windows.
+Installe ensuite [PawnIO](https://github.com/namazso/PawnIO.Setup/releases/latest) si nécessaire. Dans le widget, sélectionne **Menu → Accès température (administrateur)** et valide la demande administrateur. La disponibilité de la mesure dépend du matériel et des droits Windows.
