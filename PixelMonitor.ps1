@@ -1,4 +1,4 @@
-﻿param([switch]$SmokeTest,[switch]$SmokeTestMini)
+﻿param([switch]$SmokeTest,[switch]$SmokeTestMini,[ValidateSet('en','fr','ar')][string]$SmokeLanguage)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
@@ -40,7 +40,7 @@ $collect = {
 
 $script:folder = $PSScriptRoot
 $script:settingsPath = Join-Path (Join-Path $env:LOCALAPPDATA 'PixelMonitor') 'settings.json'
-$settings = [ordered]@{ Theme='Menthe'; Interval=3000; Scale=100; Mini=$false; History=$false; Animation=$false; Alerts='Standard'; Topmost=$false; Drive=$env:SystemDrive; X=$null; Y=$null; Visible=@('CPU','RAM','DISQUE','TEMP','BATTERIE') }
+$settings = [ordered]@{ Theme='Menthe'; Interval=3000; Scale=100; Mini=$false; Language='en'; History=$false; Animation=$false; Alerts='Standard'; Topmost=$false; Drive=$env:SystemDrive; X=$null; Y=$null; Visible=@('CPU','RAM','DISQUE','TEMP','BATTERIE') }
 if (Test-Path -LiteralPath $script:settingsPath) {
     try {
         $loaded = Get-Content -Raw -LiteralPath $script:settingsPath | ConvertFrom-Json
@@ -49,8 +49,41 @@ if (Test-Path -LiteralPath $script:settingsPath) {
         }
     } catch { }
 }
+$languages = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $PSScriptRoot 'Languages.json') | ConvertFrom-Json
+$languageNames = [ordered]@{ en='English'; fr='Français'; ar='العربية' }
+if (!$languageNames.Contains($settings.Language)) { $settings.Language = 'en' }
+
+function T([string]$key) {
+    $entry = $languages.($settings.Language).PSObject.Properties[$key]
+    if ($entry) { return [string]$entry.Value }
+    return $key
+}
+
+function Get-LayoutX([single]$left, [single]$width) {
+    if ($settings.Language -eq 'ar') {
+        $canvas = if ($settings.Mini) { 220 } else { 352 }
+        return [single]($canvas - $left - $width)
+    }
+    return $left
+}
+
+function Draw-WidgetText($graphics, [string]$text, $font, $brush, [single]$left, [single]$top) {
+    $width = $graphics.MeasureString($text,$font).Width
+    $x = Get-LayoutX $left $width
+    if ($settings.Language -eq 'ar' -and $text -match '[\u0600-\u06FF]') {
+        $format = [Drawing.StringFormat]::new([Drawing.StringFormatFlags]::DirectionRightToLeft)
+        try {
+            $bounds = [Drawing.RectangleF]::new($x,$top,$width+1,$font.Height+3)
+            $graphics.DrawString($text,$font,$brush,$bounds,$format)
+        } finally { $format.Dispose() }
+    } else {
+        $graphics.DrawString($text,$font,$brush,$x,$top)
+    }
+}
+
 $themes = [ordered]@{ Menthe='#8CF5B0'; Ambre='#FFC46B'; Lavande='#D5A8FF'; Glacier='#80DCFF'; Rose='#FF91BC'; Arcade='#D9FB66' }
 if (!$themes.Contains($settings.Theme)) { $settings.Theme = 'Menthe' }
+if ($SmokeTest -and $SmokeLanguage) { $settings.Language = $SmokeLanguage }
 $script:history = @{}
 $script:pulse = 0
 $thresholds = @{
@@ -93,7 +126,7 @@ function Draw-History($graphics, $points, $brush, $left, $top, $width, $height) 
     foreach ($point in $points) {
         if ($null -ne $point) {
             $bar = [math]::Max(1,[math]::Round($height * [math]::Min(100,[math]::Max(0,$point)) / 100))
-            $graphics.FillRectangle($brush,[single]($left + $indent * $step),[single]($top + $height - $bar),[single]([math]::Max(1,$step-1)),[single]$bar)
+            $graphics.FillRectangle($brush,(Get-LayoutX ($left + $indent*$step) ([math]::Max(1,$step-1))),[single]($top + $height - $bar),[single]([math]::Max(1,$step-1)),[single]$bar)
         }
         $indent++
     }
@@ -153,82 +186,82 @@ $form.Add_Paint({
     $alert = [Drawing.SolidBrush]::new([Drawing.ColorTranslator]::FromHtml('#FF9A80'))
     $bright = [Drawing.Brushes]::White
     $title = [Drawing.Font]::new('Consolas',17,[Drawing.FontStyle]::Bold,[Drawing.GraphicsUnit]::Pixel)
-    $small = [Drawing.Font]::new('Consolas',12,[Drawing.GraphicsUnit]::Pixel)
+    $small = if ($settings.Language -eq 'ar') { [Drawing.Font]::new('Segoe UI',13,[Drawing.GraphicsUnit]::Pixel) } else { [Drawing.Font]::new('Consolas',12,[Drawing.GraphicsUnit]::Pixel) }
     $frame = [Drawing.Pen]::new($track,2)
     try {
         $secondPixel = if ($settings.Animation -and $script:pulse -eq 0) { $muted } else { $accent }
         if ($settings.Mini) {
             $g.DrawRectangle($frame,1,1,218,($form.ClientSize.Height / $factor)-2)
-            $g.FillRectangle($accent,12,10,5,5)
-            $g.FillRectangle($secondPixel,17,15,5,5)
-            $g.DrawString('PIXEL MONITOR',$small,$bright,29,10)
-            $g.DrawString('[+]',$small,$accent,181,10)
+            $g.FillRectangle($accent,(Get-LayoutX 12 5),10,5,5)
+            $g.FillRectangle($secondPixel,(Get-LayoutX 17 5),15,5,5)
+            Draw-WidgetText $g 'PIXEL MONITOR' $small $bright 29 10
+            Draw-WidgetText $g '[+]' $small $accent 181 10
             $y = 33
             foreach ($label in $settings.Visible) {
                 $meter = Get-MetricValue $sample $label
                 $primary = if ($null -eq $meter) { '--' } elseif ($label -eq 'TEMP') { '{0:N0} °C' -f $meter } else { '{0:N0} %' -f [math]::Min(100,$meter) }
-                $name = if ($label -eq 'TEMP') { 'ACPI' } else { $label }
-                $g.DrawString($name,$small,$bright,12,$y)
+                $name = if ($label -eq 'TEMP') { T 'ACPI' } else { T $label }
+                Draw-WidgetText $g $name $small $bright 12 $y
                 $ink = if (Test-Threshold $label $meter) { $alert } else { $accent }
                 if ($settings.History) {
-                    $g.FillRectangle($track,76,$y+2,78,12)
+                    $g.FillRectangle($track,(Get-LayoutX 76 78),$y+2,78,12)
                     Draw-History $g $script:history[$label] $ink 76 ($y+2) 78 12
                 } else {
                     for ($index=0; $index -lt 8; $index++) {
                         $fill = if ($null -ne $meter -and $index -lt [math]::Round($meter*8/100)) { $ink } else { $track }
-                        $g.FillRectangle($fill,76+10*$index,$y+4,8,6)
+                        $g.FillRectangle($fill,(Get-LayoutX (76+10*$index) 8),$y+4,8,6)
                     }
                 }
                 if (Test-Threshold $label $meter) { $primary = '! ' + $primary }
-                $g.DrawString($primary,$small,$ink,208-$g.MeasureString($primary,$small).Width,$y)
+                Draw-WidgetText $g $primary $small $ink (208-$g.MeasureString($primary,$small).Width) $y
                 $y += 22
             }
             return
         }
         $g.DrawRectangle($frame,1,1,350,($form.ClientSize.Height / $factor)-2)
-        $g.FillRectangle($accent,16,15,8,8)
-        $g.FillRectangle($secondPixel,24,23,8,8)
-        $g.DrawString('PIXEL MONITOR',$title,$bright,40,14)
-        $g.DrawString('[-]',$small,$accent,246,18)
-        $g.DrawString('[ MENU ]',$small,$accent,276,18)
+        $g.FillRectangle($accent,(Get-LayoutX 16 8),15,8,8)
+        $g.FillRectangle($secondPixel,(Get-LayoutX 24 8),23,8,8)
+        Draw-WidgetText $g 'PIXEL MONITOR' $title $bright 40 14
+        Draw-WidgetText $g '[-]' $small $accent 246 18
+        Draw-WidgetText $g ('[ ' + (T 'Menu') + ' ]') $small $accent 276 18
         $y = 48
         foreach ($label in $settings.Visible) {
             $meter = $null
             $primary = '--'
-            $detail = 'Chargement...'
+            $detail = T 'Loading'
             if ($sample) {
-                $detail = 'Mesure indisponible'
+                $detail = T 'Unavailable'
                 switch ($label) {
-                    CPU { $meter=$sample.CPU; if ($null -ne $meter) { $detail='Charge totale' } }
-                    RAM { $meter=$sample.RAM; if ($null -ne $meter) { $detail='{0:N1} / {1:N1} Gio' -f $sample.RamUsed,$sample.RamTotal } }
-                    DISQUE { $meter=$sample.Disk; if ($null -ne $meter) { $detail='{0}  L {1:N1} / E {2:N1} Mio/s' -f $settings.Drive,($sample.DiskRead/1MB),($sample.DiskWrite/1MB) } }
-                    TEMP { if ($null -ne $sample.Temp) { $meter=$sample.Temp; $primary='{0:N0} °C' -f $meter; $detail='Zone ACPI ' + $sample.TempZone } else { $detail='Zone thermique indisponible' } }
-                    BATTERIE { $meter=$sample.Battery; if ($null -ne $meter) { $detail=$sample.Power } }
+                    CPU { $meter=$sample.CPU; if ($null -ne $meter) { $detail=T 'CpuDetail' } }
+                    RAM { $meter=$sample.RAM; if ($null -ne $meter) { $detail=(T 'RamDetail') -f $sample.RamUsed,$sample.RamTotal } }
+                    DISQUE { $meter=$sample.Disk; if ($null -ne $meter) { $detail=(T 'DiskDetail') -f $settings.Drive,($sample.DiskRead/1MB),($sample.DiskWrite/1MB) } }
+                    TEMP { if ($null -ne $sample.Temp) { $meter=$sample.Temp; $primary='{0:N0} °C' -f $meter; $detail=(T 'ZoneDetail') -f $sample.TempZone } else { $detail=T 'ThermalUnavailable' } }
+                    BATTERIE { $meter=$sample.Battery; if ($null -ne $meter) { $detail=if ($sample.Power -eq 'SECTEUR') { T 'Online' } else { T 'BatteryPower' } } }
                 }
                 if ($label -eq 'DISQUE' -and $null -ne $sample.Free) {
-                    $detail += ('  |  {0:N0} Gio libres' -f $sample.Free)
+                    $detail += '  |  ' + ((T 'FreeDetail') -f $sample.Free)
                 }
                 if ($null -ne $meter -and $label -ne 'TEMP') { $primary='{0:N0} %' -f [math]::Min(100,$meter) }
             }
-            $g.DrawString($label,$small,$bright,16,$y)
+            Draw-WidgetText $g (T $label) $small $bright 16 $y
             $warn = Test-Threshold $label $meter
             $ink = if ($warn) { $alert } else { $accent }
             if ($warn) { $primary = '! ' + $primary }
-            $g.DrawString($primary,$small,$ink,334-$g.MeasureString($primary,$small).Width,$y)
+            Draw-WidgetText $g $primary $small $ink (334-$g.MeasureString($primary,$small).Width) $y
             if ($settings.History) {
-                $g.FillRectangle($track,16,$y+16,317,12)
+                $g.FillRectangle($track,(Get-LayoutX 16 317),$y+16,317,12)
                 Draw-History $g $script:history[$label] $ink 16 ($y+16) 317 12
             } else {
                 for ($index=0; $index -lt 20; $index++) {
                     $fill = if ($null -ne $meter -and $index -lt [math]::Round($meter/5)) { $ink } else { $track }
-                    $g.FillRectangle($fill,16+16*$index,$y+18,13,7)
+                    $g.FillRectangle($fill,(Get-LayoutX (16+16*$index) 13),$y+18,13,7)
                 }
             }
-            $g.DrawString($detail,$small,$muted,16,$y+29)
+            Draw-WidgetText $g $detail $small $muted 16 ($y+29)
             $y += 56
         }
-        $footer = if ($sample) { '{0:g} s  /  {1:HH:mm:ss}' -f ($settings.Interval/1000),$script:lastSample } else { 'Connexion aux compteurs Windows...' }
-        $g.DrawString($footer,$small,$muted,16,$y+5)
+        $footer = if ($sample) { '{0:g} s  /  {1:HH:mm:ss}' -f ($settings.Interval/1000),$script:lastSample } else { T 'Connecting' }
+        Draw-WidgetText $g $footer $small $muted 16 ($y+5)
     } finally {
         foreach ($resource in @($frame,$title,$small,$accent,$muted,$track,$alert)) { $resource.Dispose() }
     }
@@ -246,7 +279,8 @@ $timer.Add_Tick({
         $script:pulse = ($script:pulse + 1) % 4
         if ($script:pulse -le 1) {
             $factor = $settings.Scale / 100
-            $form.Invalidate([Drawing.Rectangle]::new(0,0,[int](40*$factor),[int](36*$factor)))
+            $left = if ($settings.Language -eq 'ar') { $form.ClientSize.Width - [int](40*$factor) } else { 0 }
+            $form.Invalidate([Drawing.Rectangle]::new($left,0,[int](40*$factor),[int](36*$factor)))
         }
     }
     if ($script:pending -and $script:pending.IsCompleted) {
@@ -273,6 +307,29 @@ $timer.Add_Tick({
 })
 
 $menu = [Windows.Forms.ContextMenuStrip]::new()
+$localizedMenuItems = [Collections.Generic.List[object]]::new()
+function Register-MenuLabel($item, $key) {
+    $localizedMenuItems.Add([pscustomobject]@{Item=$item; Key=$key})
+}
+function Update-WidgetLanguage {
+    $menu.RightToLeft = if ($settings.Language -eq 'ar') { 'Yes' } else { 'No' }
+    foreach ($entry in $localizedMenuItems) { $entry.Item.Text = T $entry.Key }
+    foreach ($choice in $languageMenu.DropDownItems) { $choice.Checked = $choice.Tag -eq $settings.Language }
+    $form.Invalidate()
+}
+$languageMenu = $menu.Items.Add('Language')
+Register-MenuLabel $languageMenu 'Language'
+foreach ($language in $languageNames.Keys) {
+    $choice = $languageMenu.DropDownItems.Add($languageNames[$language])
+    $choice.Tag = $language
+    $choice.Add_Click({
+        param($sender,$e)
+        $settings.Language = [string]$sender.Tag
+        Update-WidgetLanguage
+        [void](Save-Settings)
+    })
+}
+
 foreach ($group in @(
     @{ Label='Couleur'; Key='Theme'; Values=@($themes.Keys) },
     @{ Label='Alertes'; Key='Alerts'; Values=@('Désactivées','Prudent','Standard','Intensif') },
@@ -281,10 +338,12 @@ foreach ($group in @(
     @{ Label='Lecteur'; Key='Drive'; Values=@([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' } | ForEach-Object { $_.Name.TrimEnd('\') }) }
 )) {
     $parent = $menu.Items.Add($group.Label)
+    Register-MenuLabel $parent $group.Key
     foreach ($value in $group.Values) {
         $label = switch ($group.Key) { Interval { "$($value/1000) s" }; Scale { "$value %" }; default { "$value" } }
         $option = $parent.DropDownItems.Add($label)
         $option.Tag = @($group.Key,$value)
+        if ($group.Key -in 'Theme','Alerts') { Register-MenuLabel $option $value }
         $option.Add_Click({
             param($sender,$e)
             $key,$value = $sender.Tag
@@ -301,6 +360,7 @@ foreach ($group in @(
     })
 }
 $miniItem = $menu.Items.Add('Mode miniature')
+Register-MenuLabel $miniItem 'Mini'
 $miniItem.Checked = [bool]$settings.Mini
 function Switch-WidgetLayout {
     $settings.Mini = !$settings.Mini
@@ -312,6 +372,7 @@ $miniItem.Add_Click({ Switch-WidgetLayout })
 foreach ($toggle in @(@{Label='Historique (60 relevés)';Key='History'},@{Label='Animation du logo';Key='Animation'})) {
     $item = $menu.Items.Add($toggle.Label)
     $item.Tag = $toggle.Key
+    Register-MenuLabel $item $toggle.Key
     $item.Checked = [bool]$settings[$toggle.Key]
     $item.Add_Click({
         param($sender,$e)
@@ -323,28 +384,35 @@ foreach ($toggle in @(@{Label='Historique (60 relevés)';Key='History'},@{Label=
     })
 }
 $metrics = $menu.Items.Add('Mesures visibles')
+Register-MenuLabel $metrics 'Metrics'
 $allMetrics = @('CPU','RAM','DISQUE','TEMP','BATTERIE')
 foreach ($metric in $allMetrics) {
     $option = $metrics.DropDownItems.Add($metric)
+    $option.Tag = $metric
+    Register-MenuLabel $option $metric
     $option.Add_Click({
         param($sender,$e)
-        if ($sender.Text -in $settings.Visible) {
-            if (@($settings.Visible).Count -gt 1) { $settings.Visible = @($settings.Visible | Where-Object { $_ -ne $sender.Text }) }
-        } else { $settings.Visible = @($allMetrics | Where-Object { $_ -eq $sender.Text -or $_ -in $settings.Visible }) }
+        if ($sender.Tag -in $settings.Visible) {
+            if (@($settings.Visible).Count -gt 1) { $settings.Visible = @($settings.Visible | Where-Object { $_ -ne $sender.Tag }) }
+        } else { $settings.Visible = @($allMetrics | Where-Object { $_ -eq $sender.Tag -or $_ -in $settings.Visible }) }
         Resize-Widget
         Save-Settings
     })
 }
-$metrics.Add_DropDownOpening({ foreach ($option in $metrics.DropDownItems) { $option.Checked = $option.Text -in $settings.Visible } })
+$metrics.Add_DropDownOpening({ foreach ($option in $metrics.DropDownItems) { $option.Checked = $option.Tag -in $settings.Visible } })
 $pin = $menu.Items.Add('Toujours au premier plan')
+Register-MenuLabel $pin 'Topmost'
 $pin.Checked = $form.TopMost
 $pin.Add_Click({ $form.TopMost = !$form.TopMost; $pin.Checked = $form.TopMost; $settings.Topmost = $form.TopMost; Save-Settings })
-$null = $menu.Items.Add('Fermer', $null, { $form.Close() })
+$close = $menu.Items.Add('Fermer', $null, { $form.Close() })
+Register-MenuLabel $close 'Close'
+Update-WidgetLanguage
 $form.ContextMenuStrip = $menu
 $form.Add_MouseDown({
     param($sender,$e)
     if ($e.Button -eq 'Left') {
         $x = $e.X * 100 / $settings.Scale
+        if ($settings.Language -eq 'ar') { $x = (220,352)[[int](!$settings.Mini)] - $x }
         $y = $e.Y * 100 / $settings.Scale
         if ($settings.Mini -and $y -lt 30 -and $x -ge 174) { Switch-WidgetLayout }
         elseif (!$settings.Mini -and $y -lt 40 -and $x -ge 270) { $menu.Show($form,$e.Location) }
@@ -391,6 +459,13 @@ $form.Add_Shown({
 })
 
 if ($SmokeTest) {
+    $requestedLanguage = $settings.Language
+    $languageMenu.DropDownItems[2].PerformClick()
+    if ($settings.Language -ne 'ar' -or $menu.RightToLeft -ne 'Yes' -or (T 'Close') -eq 'Close') { throw 'Arabic menu failed' }
+    $languageMenu.DropDownItems[0].PerformClick()
+    if ($settings.Language -ne 'en' -or $menu.RightToLeft -ne 'No' -or (T 'Close') -ne 'Close') { throw 'English menu failed' }
+    $settings.Language = $requestedLanguage
+    Update-WidgetLanguage
     $settings.Mini = [bool]$SmokeTestMini
     Resize-Widget
     $expectedWidth = if ($settings.Mini) { 220 } else { 352 }
@@ -405,7 +480,8 @@ if ($SmokeTest) {
     if (!$sample -or $null -eq $sample.CPU -or $null -eq $sample.RAM -or $null -eq $sample.Disk) { throw 'Compteurs indisponibles' }
     $bitmap = [Drawing.Bitmap]::new($form.Width,$form.Height)
     $form.DrawToBitmap($bitmap,$form.ClientRectangle)
-    $bitmap.Save((Join-Path $folder 'preview.png'))
+    $suffix = if ($settings.Mini) { '-mini' } else { '' }
+    $bitmap.Save((Join-Path (Split-Path -Parent $script:settingsPath) ('preview-' + $settings.Language + $suffix + '.png')))
     $bitmap.Dispose()
     $sample | ConvertTo-Json
     $form.Close()

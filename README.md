@@ -16,6 +16,10 @@ Widget de bureau Windows 11 au style pixel. Il affiche la charge CPU, la mémoir
 
 Le widget interroge les compteurs Windows localement. Il ne relève pas la charge GPU ni la VRAM. Pour limiter la fréquence d’échantillonnage pendant un calcul, choisis un intervalle de 3, 5 ou 10 secondes.
 
+## Langue
+
+Choisis **Menu → Language** pour passer à **English**, **Français** ou **العربية**. La langue est mémorisée. Sur une nouvelle installation, le widget démarre en anglais. En arabe, les menus, les mesures et les graphiques sont disposés de droite à gauche.
+
 ## Mode miniature
 
 Choisis **Menu → Mode miniature** ou clique sur **[-]** dans le titre. La miniature affiche les mesures sélectionnées sur des lignes compactes. Clique sur **[+]** pour retrouver la vue complète. Un clic droit ouvre le menu dans les deux vues. Le mode choisi est mémorisé.
