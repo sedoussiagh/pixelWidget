@@ -4,7 +4,7 @@ Widget de bureau Windows 11 au style pixel. Il affiche la charge CPU, la mémoir
 
 ## Suivre un traitement IA
 
-- **Historique** : les 60 derniers relevés de chaque mesure restent en mémoire pendant la session. À 3 s par relevé, le graphique couvre environ 3 min. Désactive l’historique pour retrouver les barres instantanées.
+- **Historique** : les 60 derniers relevés de chaque mesure restent en mémoire pendant la session. À 3 s par relevé, le graphique couvre environ 3 min. Les barres instantanées sont affichées par défaut. Active **Menu → Historique (60 relevés)** pour voir le graphique.
 - **Alertes visuelles** : un **!** et une couleur orange signalent un seuil atteint. Le menu propose trois profils ou la désactivation. Les alertes de température se rapportent à la zone ACPI.
 - **Affichage** : thèmes Menthe, Ambre, Lavande, Glacier, Rose et Arcade, animation du logo facultative, et option **Toujours au premier plan**.
 

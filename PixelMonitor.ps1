@@ -40,7 +40,7 @@ $collect = {
 
 $script:folder = $PSScriptRoot
 $script:settingsPath = Join-Path (Join-Path $env:LOCALAPPDATA 'PixelMonitor') 'settings.json'
-$settings = [ordered]@{ Theme='Menthe'; Interval=3000; Scale=100; Mini=$false; History=$true; Animation=$false; Alerts='Standard'; Topmost=$false; Drive=$env:SystemDrive; X=$null; Y=$null; Visible=@('CPU','RAM','DISQUE','TEMP','BATTERIE') }
+$settings = [ordered]@{ Theme='Menthe'; Interval=3000; Scale=100; Mini=$false; History=$false; Animation=$false; Alerts='Standard'; Topmost=$false; Drive=$env:SystemDrive; X=$null; Y=$null; Visible=@('CPU','RAM','DISQUE','TEMP','BATTERIE') }
 if (Test-Path -LiteralPath $script:settingsPath) {
     try {
         $loaded = Get-Content -Raw -LiteralPath $script:settingsPath | ConvertFrom-Json
