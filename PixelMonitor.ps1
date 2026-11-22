@@ -40,7 +40,7 @@ $collect = {
 
 $script:folder = $PSScriptRoot
 $script:settingsPath = Join-Path (Join-Path $env:LOCALAPPDATA 'PixelMonitor') 'settings.json'
-$settings = [ordered]@{ Theme='Menthe'; Interval=3000; Scale=100; Mini=$false; Topmost=$false; Drive=$env:SystemDrive; X=$null; Y=$null; Visible=@('CPU','RAM','DISQUE','TEMP','BATTERIE') }
+$settings = [ordered]@{ Theme='Menthe'; Interval=3000; Scale=100; Mini=$false; History=$true; Animation=$false; Alerts='Standard'; Topmost=$false; Drive=$env:SystemDrive; X=$null; Y=$null; Visible=@('CPU','RAM','DISQUE','TEMP','BATTERIE') }
 if (Test-Path -LiteralPath $script:settingsPath) {
     try {
         $loaded = Get-Content -Raw -LiteralPath $script:settingsPath | ConvertFrom-Json
@@ -49,8 +49,56 @@ if (Test-Path -LiteralPath $script:settingsPath) {
         }
     } catch { }
 }
-$themes = [ordered]@{ Menthe='#8CF5B0'; Ambre='#FFC46B'; Lavande='#D5A8FF'; Glacier='#80DCFF' }
+$themes = [ordered]@{ Menthe='#8CF5B0'; Ambre='#FFC46B'; Lavande='#D5A8FF'; Glacier='#80DCFF'; Rose='#FF91BC'; Arcade='#D9FB66' }
 if (!$themes.Contains($settings.Theme)) { $settings.Theme = 'Menthe' }
+$script:history = @{}
+$script:pulse = 0
+$thresholds = @{
+    Prudent = @{ CPU=85; RAM=80; TEMP=75 }
+    Standard = @{ CPU=95; RAM=90; TEMP=85 }
+    Intensif = @{ CPU=99; RAM=95; TEMP=90 }
+}
+
+function Get-MetricValue($reading, $label) {
+    if ($reading) {
+        $key = switch ($label) {
+            DISQUE { 'Disk' }
+            BATTERIE { 'Battery' }
+            default { $label }
+        }
+        $reading.$key
+    }
+}
+
+function Add-MetricHistory($reading) {
+    foreach ($label in @('CPU','RAM','DISQUE','TEMP','BATTERIE')) {
+        if (!$script:history.ContainsKey($label)) {
+            $script:history[$label] = [Collections.Generic.Queue[object]]::new()
+        }
+        $queue = $script:history[$label]
+        if ($queue.Count -ge 60) { [void]$queue.Dequeue() }
+        $queue.Enqueue((Get-MetricValue $reading $label))
+    }
+}
+
+function Test-Threshold($label, $value) {
+    $preset = $thresholds[$settings.Alerts]
+    return ($null -ne $value -and $preset -and $preset.ContainsKey($label) -and $value -ge $preset[$label])
+}
+
+function Draw-History($graphics, $points, $brush, $left, $top, $width, $height) {
+    if (!$points -or $points.Count -eq 0) { return }
+    $indent = 60 - $points.Count
+    $step = $width / 60.0
+    foreach ($point in $points) {
+        if ($null -ne $point) {
+            $bar = [math]::Max(1,[math]::Round($height * [math]::Min(100,[math]::Max(0,$point)) / 100))
+            $graphics.FillRectangle($brush,[single]($left + $indent * $step),[single]($top + $height - $bar),[single]([math]::Max(1,$step-1)),[single]$bar)
+        }
+        $indent++
+    }
+}
+
 $sample = $null
 $form = [Windows.Forms.Form]::new()
 $form.Text = 'Pixel Monitor'
@@ -102,43 +150,44 @@ $form.Add_Paint({
     $accent = [Drawing.SolidBrush]::new([Drawing.ColorTranslator]::FromHtml($themes[$settings.Theme]))
     $muted = [Drawing.SolidBrush]::new([Drawing.ColorTranslator]::FromHtml('#9CAEC5'))
     $track = [Drawing.SolidBrush]::new([Drawing.ColorTranslator]::FromHtml('#2A384A'))
+    $alert = [Drawing.SolidBrush]::new([Drawing.ColorTranslator]::FromHtml('#FF9A80'))
     $bright = [Drawing.Brushes]::White
     $title = [Drawing.Font]::new('Consolas',17,[Drawing.FontStyle]::Bold,[Drawing.GraphicsUnit]::Pixel)
     $small = [Drawing.Font]::new('Consolas',12,[Drawing.GraphicsUnit]::Pixel)
     $frame = [Drawing.Pen]::new($track,2)
     try {
+        $secondPixel = if ($settings.Animation -and $script:pulse -eq 0) { $muted } else { $accent }
         if ($settings.Mini) {
             $g.DrawRectangle($frame,1,1,218,($form.ClientSize.Height / $factor)-2)
             $g.FillRectangle($accent,12,10,5,5)
-            $g.FillRectangle($accent,17,15,5,5)
+            $g.FillRectangle($secondPixel,17,15,5,5)
             $g.DrawString('PIXEL MONITOR',$small,$bright,29,10)
             $g.DrawString('[+]',$small,$accent,181,10)
             $y = 33
             foreach ($label in $settings.Visible) {
-                $meter = if ($sample) {
-                    switch ($label) {
-                        CPU { $sample.CPU }
-                        RAM { $sample.RAM }
-                        DISQUE { $sample.Disk }
-                        TEMP { $sample.Temp }
-                        BATTERIE { $sample.Battery }
-                    }
-                }
+                $meter = Get-MetricValue $sample $label
                 $primary = if ($null -eq $meter) { '--' } elseif ($label -eq 'TEMP') { '{0:N0} °C' -f $meter } else { '{0:N0} %' -f [math]::Min(100,$meter) }
                 $name = if ($label -eq 'TEMP') { 'ACPI' } else { $label }
                 $g.DrawString($name,$small,$bright,12,$y)
-                for ($index=0; $index -lt 8; $index++) {
-                    $fill = if ($null -ne $meter -and $index -lt [math]::Round($meter*8/100)) { $accent } else { $track }
-                    $g.FillRectangle($fill,76+10*$index,$y+4,8,6)
+                $ink = if (Test-Threshold $label $meter) { $alert } else { $accent }
+                if ($settings.History) {
+                    $g.FillRectangle($track,76,$y+2,78,12)
+                    Draw-History $g $script:history[$label] $ink 76 ($y+2) 78 12
+                } else {
+                    for ($index=0; $index -lt 8; $index++) {
+                        $fill = if ($null -ne $meter -and $index -lt [math]::Round($meter*8/100)) { $ink } else { $track }
+                        $g.FillRectangle($fill,76+10*$index,$y+4,8,6)
+                    }
                 }
-                $g.DrawString($primary,$small,$accent,208-$g.MeasureString($primary,$small).Width,$y)
+                if (Test-Threshold $label $meter) { $primary = '! ' + $primary }
+                $g.DrawString($primary,$small,$ink,208-$g.MeasureString($primary,$small).Width,$y)
                 $y += 22
             }
             return
         }
         $g.DrawRectangle($frame,1,1,350,($form.ClientSize.Height / $factor)-2)
         $g.FillRectangle($accent,16,15,8,8)
-        $g.FillRectangle($accent,24,23,8,8)
+        $g.FillRectangle($secondPixel,24,23,8,8)
         $g.DrawString('PIXEL MONITOR',$title,$bright,40,14)
         $g.DrawString('[-]',$small,$accent,246,18)
         $g.DrawString('[ MENU ]',$small,$accent,276,18)
@@ -162,10 +211,18 @@ $form.Add_Paint({
                 if ($null -ne $meter -and $label -ne 'TEMP') { $primary='{0:N0} %' -f [math]::Min(100,$meter) }
             }
             $g.DrawString($label,$small,$bright,16,$y)
-            $g.DrawString($primary,$small,$accent,334-$g.MeasureString($primary,$small).Width,$y)
-            for ($index=0; $index -lt 20; $index++) {
-                $fill = if ($null -ne $meter -and $index -lt [math]::Round($meter/5)) { $accent } else { $track }
-                $g.FillRectangle($fill,16+16*$index,$y+18,13,7)
+            $warn = Test-Threshold $label $meter
+            $ink = if ($warn) { $alert } else { $accent }
+            if ($warn) { $primary = '! ' + $primary }
+            $g.DrawString($primary,$small,$ink,334-$g.MeasureString($primary,$small).Width,$y)
+            if ($settings.History) {
+                $g.FillRectangle($track,16,$y+16,317,12)
+                Draw-History $g $script:history[$label] $ink 16 ($y+16) 317 12
+            } else {
+                for ($index=0; $index -lt 20; $index++) {
+                    $fill = if ($null -ne $meter -and $index -lt [math]::Round($meter/5)) { $ink } else { $track }
+                    $g.FillRectangle($fill,16+16*$index,$y+18,13,7)
+                }
             }
             $g.DrawString($detail,$small,$muted,16,$y+29)
             $y += 56
@@ -173,7 +230,7 @@ $form.Add_Paint({
         $footer = if ($sample) { '{0:g} s  /  {1:HH:mm:ss}' -f ($settings.Interval/1000),$script:lastSample } else { 'Connexion aux compteurs Windows...' }
         $g.DrawString($footer,$small,$muted,16,$y+5)
     } finally {
-        foreach ($resource in @($frame,$title,$small,$accent,$muted,$track)) { $resource.Dispose() }
+        foreach ($resource in @($frame,$title,$small,$accent,$muted,$track,$alert)) { $resource.Dispose() }
     }
 })
 
@@ -185,12 +242,20 @@ $script:pending = $null
 $script:nextSample = [datetime]::MinValue
 $timer.Interval = 250
 $timer.Add_Tick({
+    if ($settings.Animation -and $form.Visible) {
+        $script:pulse = ($script:pulse + 1) % 4
+        if ($script:pulse -le 1) {
+            $factor = $settings.Scale / 100
+            $form.Invalidate([Drawing.Rectangle]::new(0,0,[int](40*$factor),[int](36*$factor)))
+        }
+    }
     if ($script:pending -and $script:pending.IsCompleted) {
         try {
             $result = $worker.EndInvoke($script:pending)
             if ($result.Count -gt 0 -and $script:sampleDrive -eq $settings.Drive) {
                 $script:sample = $result[-1]
                 $script:lastSample = Get-Date
+                Add-MetricHistory $script:sample
                 $form.Invalidate()
             }
         } finally {
@@ -210,6 +275,7 @@ $timer.Add_Tick({
 $menu = [Windows.Forms.ContextMenuStrip]::new()
 foreach ($group in @(
     @{ Label='Couleur'; Key='Theme'; Values=@($themes.Keys) },
+    @{ Label='Alertes'; Key='Alerts'; Values=@('Désactivées','Prudent','Standard','Intensif') },
     @{ Label='Intervalle'; Key='Interval'; Values=@(1000,3000,5000,10000) },
     @{ Label='Taille'; Key='Scale'; Values=@(85,100,125,150) },
     @{ Label='Lecteur'; Key='Drive'; Values=@([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' } | ForEach-Object { $_.Name.TrimEnd('\') }) }
@@ -223,7 +289,7 @@ foreach ($group in @(
             param($sender,$e)
             $key,$value = $sender.Tag
             $settings[$key] = $value
-            if ($key -eq 'Drive') { $script:sample = $null }
+            if ($key -eq 'Drive') { $script:sample = $null; $script:history.Remove('DISQUE') }
             $script:nextSample = [datetime]::MinValue
             Resize-Widget
             Save-Settings
@@ -243,6 +309,19 @@ function Switch-WidgetLayout {
     [void](Save-Settings)
 }
 $miniItem.Add_Click({ Switch-WidgetLayout })
+foreach ($toggle in @(@{Label='Historique (60 relevés)';Key='History'},@{Label='Animation du logo';Key='Animation'})) {
+    $item = $menu.Items.Add($toggle.Label)
+    $item.Tag = $toggle.Key
+    $item.Checked = [bool]$settings[$toggle.Key]
+    $item.Add_Click({
+        param($sender,$e)
+        $key = $sender.Tag
+        $settings[$key] = !$settings[$key]
+        $sender.Checked = $settings[$key]
+        $form.Invalidate()
+        [void](Save-Settings)
+    })
+}
 $metrics = $menu.Items.Add('Mesures visibles')
 $allMetrics = @('CPU','RAM','DISQUE','TEMP','BATTERIE')
 foreach ($metric in $allMetrics) {

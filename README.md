@@ -2,6 +2,20 @@
 
 Widget de bureau Windows 11 au style pixel. Il affiche la charge CPU, la mémoire, les débits et l’espace libre du disque sélectionné, la batterie et, si le capteur est accessible, la température de la zone ACPI. Le menu permet de modifier la couleur, la taille, l’intervalle et les mesures visibles.
 
+## Suivre un traitement IA
+
+- **Historique** : les 60 derniers relevés de chaque mesure restent en mémoire pendant la session. À 3 s par relevé, le graphique couvre environ 3 min. Désactive l’historique pour retrouver les barres instantanées.
+- **Alertes visuelles** : un **!** et une couleur orange signalent un seuil atteint. Le menu propose trois profils ou la désactivation. Les alertes de température se rapportent à la zone ACPI.
+- **Affichage** : thèmes Menthe, Ambre, Lavande, Glacier, Rose et Arcade, animation du logo facultative, et option **Toujours au premier plan**.
+
+| Profil | CPU | RAM | Zone ACPI |
+| --- | ---: | ---: | ---: |
+| Prudent | 85 % | 80 % | 75 °C |
+| Standard | 95 % | 90 % | 85 °C |
+| Intensif | 99 % | 95 % | 90 °C |
+
+Le widget interroge les compteurs Windows localement. Il ne relève pas la charge GPU ni la VRAM. Pour limiter la fréquence d’échantillonnage pendant un calcul, choisis un intervalle de 3, 5 ou 10 secondes.
+
 ## Mode miniature
 
 Choisis **Menu → Mode miniature** ou clique sur **[-]** dans le titre. La miniature affiche les mesures sélectionnées sur des lignes compactes. Clique sur **[+]** pour retrouver la vue complète. Un clic droit ouvre le menu dans les deux vues. Le mode choisi est mémorisé.
